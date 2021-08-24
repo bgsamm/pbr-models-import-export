@@ -278,7 +278,8 @@ def parseBones(file, address, bones):
     nameAddr = file.read('uint', address, offset=0x4)
     name = file.read('string', nameAddr)
     idx = file.read('ushort', address, offset=0x8)
-    
+
+    pos = Matrix.Identity(4)
     posAddr = file.read('uint', address, offset=0xc)
     if posAddr != 0:
         x = file.read('float', posAddr)
@@ -287,15 +288,16 @@ def parseBones(file, address, bones):
         pos = Matrix.Translation((x, y, z))
     else:
         pos = Matrix.Identity(4)
-        
-    rotAddr = file.read('uint', address, offset=0x10)
-    if rotAddr != 0:
-        rx = file.read('float', rotAddr)
-        ry = file.read('float', 0, whence='current')
-        rz = file.read('float', 0, whence='current')
-        rot = toRotationMatrix(rx, ry, rz)
-    else:
-        rot = Matrix.Identity(4)
+
+    rot = Matrix.Identity(4)
+##    rotAddr = file.read('uint', address, offset=0x10)
+##    if rotAddr != 0:
+##        rx = file.read('float', rotAddr)
+##        ry = file.read('float', 0, whence='current')
+##        rz = file.read('float', 0, whence='current')
+##        rot = toRotationMatrix(rx, ry, rz)
+##    else:
+##        rot = Matrix.Identity(4)
         
     scaAddr = file.read('uint', address, offset=0x14)
     if scaAddr != 0:
