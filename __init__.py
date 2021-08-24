@@ -1,7 +1,7 @@
 bl_info = {
     "name": "PBR Model Importer",
     "author": "pjsamm",
-    "blender": (2, 80, 0),
+    "blender": (2, 82, 0),
     "category": "Import-Export",
 }
 
@@ -30,6 +30,11 @@ class ImportModel(Operator, ImportHelper):
     bl_idname = "pbr.import"
     bl_label = "PBR Model (.sdr)"
     bl_options = {'REGISTER', 'UNDO'}
+
+    filter_glob: bpy.props.StringProperty(
+        default='*.sdr',
+        options={'HIDDEN'}
+    )
 
     def addMirror(self, node_tree):
         texCoord = node_tree.nodes.new('ShaderNodeTexCoord')
