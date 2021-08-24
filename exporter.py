@@ -332,7 +332,7 @@ for mat in materials:
     if tex.image.name not in textures:
         textures[tex.image.name] = tex
 
-fout = open('C:\\Users\\seanm\\Projects\\PBR\\Blender\\pikipek.sdr', 'wb+')
+fout = open('output.sdr', 'wb+')
 fout.write(b'\x01\x00\x00\x04\x00\x00\x00\x00')
 
 # textures
