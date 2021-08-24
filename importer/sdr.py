@@ -211,7 +211,7 @@ def parseMesh(file, address):
         stride = file.read('uchar', 0x4, whence='current')
         if attr == GX_VA_POS:
             vertStride = stride
-        elif attr = GX_VA_TEX0:
+        elif attr == GX_VA_TEX0:
             texStride = stride
         attr = file.read('uchar', 0x2, whence='current')
     
