@@ -1,15 +1,21 @@
 import io, struct
 from mathutils import Matrix
 
-class Material:
-    def __init__(self, name, texID):
-        self.name = name
-        self.textureIndex = texID
+class Image:
+    def __init__(self, pixels, w, h):
+        self.width = w
+        self.height = h
+        self.pixels = pixels
 
 class Texture:
     def __init__(self, imgID, extType):
         self.imageIndex = imgID
         self.extensionType = extType
+
+class Material:
+    def __init__(self, name, texID):
+        self.name = name
+        self.textureIndex = texID
 
 class Face:
     def __init__(self, v, n, t):

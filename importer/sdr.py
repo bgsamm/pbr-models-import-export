@@ -1,6 +1,6 @@
 import os, math, struct
 from mathutils import Euler, Matrix
-from .gtx import imagify
+from . import gtx
 from .classes import *
 from .const import *
 from ..file_io import *
@@ -52,7 +52,7 @@ def parseTextures(file, address, numTextures):
         imageOffset = file.read('uint', textureAddr, offset=0x28)
         imageAddr = textureAddr + imageOffset
         if imageAddr not in img_dict:
-            img = extractImage(file, textureAddr, imageAddr)
+            img = decompressImage(file, textureAddr, imageAddr)
             img_dict[imageAddr] = {
                 'object': img,
                 'index': len(img_dict)
@@ -63,13 +63,16 @@ def parseTextures(file, address, numTextures):
             'index': len(tex_dict)
         }
         
-def extractImage(file, address, imageAddr):
-    texWidth = file.read('ushort', address, offset=0)
-    texHeight = file.read('ushort', address, offset=0x2)
-    texEncoding = file.read('uint', address, offset=0x8)
-    size = file.read('uint', address, offset=0x4c)
-    imageData = file.read_chunk(imageAddr, size)
-    image = imagify(imageData, texWidth, texHeight, encodings[texEncoding])
+def decompressImage(file, texAddress, imageAddr):
+    width = file.read('ushort', texAddress, offset=0)
+    height = file.read('ushort', texAddress, offset=0x2)
+    encoding = file.read('uint', texAddress, offset=0x8)
+    size = file.read('uint', texAddress, offset=0x4c)
+    compressedData = file.read_chunk(imageAddr, size)
+    imageData = gtx.decompress(compressedData,
+                               width, height,
+                               encodings[encoding])
+    image = Image(imageData, width, height)
     return image
 
 def parseMaterials(file, address, numMaterials):
@@ -109,10 +112,9 @@ def parseNormals(file, address, numEntries, stride):
 def parseTextureCoords(file, address, numEntries, stride):
     texcoords = []
     for i in range(numEntries):
-        file.seek(offset + i * entrySize)
         x = file.read('float', address, offset=(i * stride))
         # mirror vertically
-        y = 1.0 - file.read('float', 0, whence='current')
+        y = file.read('float', 0, whence='current')
         texcoords.append((x, y))
     return texcoords
 

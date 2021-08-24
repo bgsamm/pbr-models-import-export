@@ -36,13 +36,11 @@ class BinaryReader:
             return self._read_string()
         raise ValueError(f'Invalid value for arg `type`: {type}')
 
-    def _read_string(self, address):
+    def _read_string(self):
         """
-        Reads a char[] from `address` and converts it to an ascii string;
-        if `address` is not supplied, reads from current position
+        Reads a char[] from the current position
+        and converts it to an ascii string
         """
-        if address is not None:
-            self.file.seek(address)
         s = ''
         nextChar = self.file.read(1)[0] # converts byte to int
         while nextChar != 0:

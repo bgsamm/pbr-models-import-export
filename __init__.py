@@ -6,10 +6,15 @@ bl_info = {
 }
 
 if 'bpy' in locals():
-    import importlib
-    importlib.reload(sdr)
-    importlib.reload(gtx)
-    importlib.reload(classes)
+    print('Reloading modules...')
+    import sys, importlib
+    for name in list(sys.modules):
+        if name.startswith('pbr-models-import-export'):
+            if '.' not in name:
+                print('Reloaded .')
+            else:
+                print('Reloaded', name[name.index('.'):])
+            importlib.reload(sys.modules[name])
 
 import bpy, bmesh
 from bpy.types import Operator
@@ -43,12 +48,12 @@ class ImportModel(Operator, ImportHelper):
         node_tree.links.new(pingPongY.outputs['Value'], combineXYZ.inputs['Y'])
         return combineXYZ
 
-    def createMaterial(self, matData, texData, imgPath):
+    def createMaterial(self, matData, texData, image):
         mat = bpy.data.materials.new(matData.name)
         mat.use_nodes = True
         bsdf = mat.node_tree.nodes['Principled BSDF']
         texImage = mat.node_tree.nodes.new('ShaderNodeTexImage')
-        texImage.image = bpy.data.images.load(imgPath)
+        texImage.image = image
         if texData.extensionType == GX_CLAMP:
             texImage.extension = 'EXTEND'
         elif texData.extensionType == GX_REPEAT:
@@ -153,10 +158,15 @@ class ImportModel(Operator, ImportHelper):
         # save images
         images = model_data['images']
         for i in range(len(images)):
-            folder = os.path.dirname(self.filepath)
-            path = f'{folder}\\texture{i}.png'
-            images[i].save(path, format='PNG')
-            images[i] = path
+            img = images[i]
+            image = bpy.data.images.new(f'image{i}', img.width, img.height)
+            # Blender expects values to be normalized
+            image.pixels = [(x / 255) for x in img.pixels]
+            path = f'{os.path.dirname(self.filepath)}\\texture{i}.png'
+            image.filepath_raw = path
+            image.file_format = 'PNG'
+            image.save()
+            images[i] = image
         
         # create materials
         materials = model_data['materials']

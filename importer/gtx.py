@@ -1,4 +1,3 @@
-from PIL import Image
 import math
 
 def extractBits(byte, pos, sz):
@@ -29,11 +28,11 @@ def bytesToRGB5A3(b1, b2):
 def interpolate(v1, v2, weight):
     return [int(a * (1 - weight) + b * weight) for a, b in zip(v1, v2)]
     
-def parseImage(byte_arr, img_width, img_height, encoding):
+def parseImageData(byte_arr, img_width, img_height, encoding):
     if encoding == 'RGBA32':
-        return parseRGBA32Image(byte_arr, img_width, img_height)
+        return parseRGBA32Data(byte_arr, img_width, img_height)
     elif encoding == 'CMPR':
-        return parseCMPRImage(byte_arr, img_width, img_height)
+        return parseCMPRData(byte_arr, img_width, img_height)
     
     if encoding == 'I4':
         img_width /= 2
@@ -76,9 +75,9 @@ def parseImage(byte_arr, img_width, img_height, encoding):
                         rgba += bytesToRGB565(*b)
                     elif encoding == 'RGB5A3':
                         rgba += bytesToRGB5A3(*b)
-    return bytes(rgba)
+    return rgba
 
-def parseRGBA32Image(byte_arr, img_width, img_height):
+def parseRGBA32Data(byte_arr, img_width, img_height):
     block_width = block_height = 4
     px_sz = 4
     rgba = []
@@ -97,8 +96,7 @@ def parseRGBA32Image(byte_arr, img_width, img_height):
                     g = byte_arr[offset + block_width * block_height * 2]
                     b = byte_arr[offset + block_width * block_height * 2 + 1]
                     rgba += [r, g, b, a]
-    print(rgba[:4])
-    return bytes(rgba)
+    return rgba
 
 def getCMPRColors(subblock):
     b1 = subblock[0]
@@ -115,7 +113,7 @@ def getCMPRColors(subblock):
         color4 = [0, 0, 0, 0]
     return [color1, color2, color3, color4]
 
-def parseCMPRImage(byte_arr, img_width, img_height):
+def parseCMPRData(byte_arr, img_width, img_height):
     block_width = block_height = 2 # num. sub-blocks
     rgba = []
     # each sub-block is 4 pixels wide
@@ -138,10 +136,9 @@ def parseCMPRImage(byte_arr, img_width, img_height):
                         if 8 * c + 4 * j + px < img_width:
                             index = extractBits(indices[i % 4], px * 2, 2)
                             rgba += colors[index]
-    return bytes(rgba)                    
+    return rgba                  
     
-def imagify(byte_arr, img_width, img_height, encoding):
-    rgba = parseImage(byte_arr, img_width, img_height, encoding)
+def decompress(byte_arr, img_width, img_height, encoding):
+    rgba = parseImageData(byte_arr, img_width, img_height, encoding)
     assert len(rgba) / 4 == img_width * img_height
-    im = Image.frombytes('RGBA', (img_width, img_height), rgba)
-    return im
+    return rgba
