@@ -17,8 +17,8 @@ from bpy_extras.io_utils import ImportHelper
 from mathutils import Euler, Matrix, Vector
 
 import os, math
-from . import sdr
-from .const import *
+from .importer import sdr
+from .importer.const import *
 
 class ImportModel(Operator, ImportHelper):
     """Import a model from Pokémon Battle Revolution"""
