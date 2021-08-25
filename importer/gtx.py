@@ -47,6 +47,8 @@ def parseImageData(byte_arr, img_width, img_height, encoding):
     rgba = []
     num_blocks_x = math.ceil(img_width / block_width)
     num_blocks_y = math.ceil(img_height / block_height)
+    # add rows bottom-to-top b/c Blender uses bottom-left
+    # instead of top-left as origin
     for row in range(num_blocks_y - 1, -1, -1):
         for n in range(block_height - 1, -1, -1):
             for col in range(num_blocks_x):

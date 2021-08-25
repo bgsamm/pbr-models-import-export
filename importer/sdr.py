@@ -228,7 +228,7 @@ def parseMesh(file, address):
     t = None
     if uvLayerAddr != 0:
         texCoordsAddr = file.read('uint', uvLayerAddr, offset=0)
-        numTexCoords = file.read('ushort', uvLayerAddr, offset=0x2)
+        numTexCoords = file.read('ushort', uvLayerAddr, offset=0x4)
         t = parseTextureCoords(file, texCoordsAddr, numTexCoords, texStride)
 
     # bone weights
