@@ -56,6 +56,9 @@ def parseImageData(byte_arr, img_width, img_height, encoding):
                        + col * block_width * block_height \
                        + n * block_width) * px_sz
                 for px in range(block_width):
+                    # this is might be incorrect for I4 but oh well
+                    if col * block_width + px > img_width - 1:
+                        break
                     offset = loc + px_sz * px
                     b = byte_arr[offset:offset + px_sz]
                     if encoding == 'I4':
