@@ -1,10 +1,13 @@
 import bpy, struct
 from time import time
 
-assert bpy.context.object.type == 'ARMATURE'
+arma = None
+bones = None
 
-arma = bpy.context.object
-bones = arma.data.bones
+materials = []
+textures = {}
+
+matListAddr = 0
 
 def isSkin(name):
     return name in (mesh.name for mesh in arma.children)
@@ -322,85 +325,97 @@ def writeMesh(file, address, object):
     
     return file.tell()
 
-meshes = [child for child in arma.children if child.type == 'MESH']
-materials = []
-for mesh in meshes:
-    materials += [slot.material for slot in mesh.material_slots]
-textures = {}
-for mat in materials:
-    tex = getMatTexture(mat)
-    if tex.image.name not in textures:
-        textures[tex.image.name] = tex
+def writeSDR(path, context):
+    assert context.object.type == 'ARMATURE'
 
-fout = open('output.sdr', 'wb+')
-fout.write(b'\x01\x00\x00\x04\x00\x00\x00\x00')
+    global arma
+    global bones
+    global materials
+    global textures
+    global matListAddr
 
-# textures
-texListAddr = 0x30
+    arma = context.object
+    bones = arma.data.bones
 
-fout.seek(0xc)
-fout.write(struct.pack('>I', texListAddr))
-fout.seek(0x1a)
-fout.write(struct.pack('>H', len(textures))) # texture count
+    meshes = [child for child in arma.children if child.type == 'MESH']
+    materials = []
+    for mesh in meshes:
+        materials += [slot.material for slot in mesh.material_slots]
+    textures = {}
+    for mat in materials:
+        tex = getMatTexture(mat)
+        if tex.image.name not in textures:
+            textures[tex.image.name] = tex
 
-nextAddr = texListAddr + 4 * len(textures)
-nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
-i = 0
-for tex in textures.values():
-    textures[tex.image.name]['address'] = nextAddr
-    fout.seek(texListAddr + 4 * i)
-    fout.write(struct.pack('>I', nextAddr))
-    fout.seek(nextAddr)
-    nextAddr = writeTexture(fout, nextAddr, tex)
-    i += 1
+    fout = open(path, 'wb+')
+    fout.write(b'\x01\x00\x00\x04\x00\x00\x00\x00')
 
-# materials
-matListAddr = nextAddr
+    # textures
+    texListAddr = 0x30
 
-fout.seek(0x14)
-fout.write(struct.pack('>I', matListAddr))
-fout.seek(0x1e)
-fout.write(struct.pack('>H', len(materials))) # material count
+    fout.seek(0xc)
+    fout.write(struct.pack('>I', texListAddr))
+    fout.seek(0x1a)
+    fout.write(struct.pack('>H', len(textures))) # texture count
 
-nextAddr = matListAddr + 4 * len(materials)
-nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
-for i in range(len(materials)):
-    fout.seek(matListAddr + 4 * i)
-    fout.write(struct.pack('>I', nextAddr))
-    fout.seek(nextAddr)
-    nextAddr = writeMaterial(fout, nextAddr, materials[i])
+    nextAddr = texListAddr + 4 * len(textures)
+    nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
+    i = 0
+    for tex in textures.values():
+        textures[tex.image.name]['address'] = nextAddr
+        fout.seek(texListAddr + 4 * i)
+        fout.write(struct.pack('>I', nextAddr))
+        fout.seek(nextAddr)
+        nextAddr = writeTexture(fout, nextAddr, tex)
+        i += 1
 
-# skeleton
-skeleListAddr = nextAddr
-skeleAddr = skeleListAddr + 0x10
-skeleNameAddr = skeleAddr + 0x1c
+    # materials
+    matListAddr = nextAddr
 
-fout.seek(0x8)
-fout.write(struct.pack('>I', skeleListAddr)) # skeleton list pointer
-fout.seek(0x18)
-fout.write(b'\x00\x01') # skeleton count
+    fout.seek(0x14)
+    fout.write(struct.pack('>I', matListAddr))
+    fout.seek(0x1e)
+    fout.write(struct.pack('>H', len(materials))) # material count
 
-fout.seek(skeleListAddr)
-fout.write(struct.pack('>I', skeleAddr)) # skeleton pointer
+    nextAddr = matListAddr + 4 * len(materials)
+    nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
+    for i in range(len(materials)):
+        fout.seek(matListAddr + 4 * i)
+        fout.write(struct.pack('>I', nextAddr))
+        fout.seek(nextAddr)
+        nextAddr = writeMaterial(fout, nextAddr, materials[i])
 
-fout.seek(skeleAddr)
-fout.write(struct.pack('>I', skeleNameAddr)) # name pointer
+    # skeleton
+    skeleListAddr = nextAddr
+    skeleAddr = skeleListAddr + 0x10
+    skeleNameAddr = skeleAddr + 0x1c
 
-fout.seek(skeleAddr + 0x6)
-fout.write(struct.pack('>H', len(bones))) # bone count
+    fout.seek(0x8)
+    fout.write(struct.pack('>I', skeleListAddr)) # skeleton list pointer
+    fout.seek(0x18)
+    fout.write(b'\x00\x01') # skeleton count
 
-fout.seek(skeleNameAddr)
-fout.write(bytes(bones[0].name, 'ascii')) # skeleton name (just uses root bone name)
+    fout.seek(skeleListAddr)
+    fout.write(struct.pack('>I', skeleAddr)) # skeleton pointer
 
-sz = len(bones[0].name)
-sz = (sz // 4) * 4 + 4
-rootAddr = skeleNameAddr + sz
-fout.seek(skeleAddr + 0x10)
-fout.write(struct.pack('>I', rootAddr)) # root bone pointer
+    fout.seek(skeleAddr)
+    fout.write(struct.pack('>I', skeleNameAddr)) # name pointer
 
-nextAddr = writeBone(fout, rootAddr, bones[0]) # write bone tree
+    fout.seek(skeleAddr + 0x6)
+    fout.write(struct.pack('>H', len(bones))) # bone count
 
-# meshes
-writeMeshes(fout, rootAddr, nextAddr)
+    fout.seek(skeleNameAddr)
+    fout.write(bytes(bones[0].name, 'ascii')) # skeleton name (just uses root bone name)
 
-fout.close()
+    sz = len(bones[0].name)
+    sz = (sz // 4) * 4 + 4
+    rootAddr = skeleNameAddr + sz
+    fout.seek(skeleAddr + 0x10)
+    fout.write(struct.pack('>I', rootAddr)) # root bone pointer
+
+    nextAddr = writeBone(fout, rootAddr, bones[0]) # write bone tree
+
+    # meshes
+    writeMeshes(fout, rootAddr, nextAddr)
+
+    fout.close()
