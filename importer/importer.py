@@ -1,9 +1,12 @@
 import os, math, struct
-from mathutils import Euler, Matrix
-from . import gtx
-from .classes import *
-from .const import *
-from ..file_io import *
+from mathutils import Euler, Matrix, Vector
+
+import bpy, bmesh
+
+from ..shared import gtx
+from ..shared.classes import *
+from ..shared.const import *
+from ..shared.file_io import *
 
 encodings = {
         #0x30: ???
@@ -392,3 +395,176 @@ def parseSDR(path):
         'images': flattenIndexedDict(img_dict)
     }
     return sdr
+
+def addMirror(node_tree):
+    texCoord = node_tree.nodes.new('ShaderNodeTexCoord')
+    separateXYZ = node_tree.nodes.new('ShaderNodeSeparateXYZ')
+    node_tree.links.new(texCoord.outputs['UV'], separateXYZ.inputs['Vector'])
+    pingPongX = node_tree.nodes.new('ShaderNodeMath')
+    pingPongX.operation = 'PINGPONG'
+    pingPongX.inputs[1].default_value = 1.0
+    pingPongY = node_tree.nodes.new('ShaderNodeMath')
+    pingPongY.operation = 'PINGPONG'
+    pingPongY.inputs[1].default_value = 1.0
+    node_tree.links.new(separateXYZ.outputs['X'], pingPongX.inputs['Value'])
+    node_tree.links.new(separateXYZ.outputs['Y'], pingPongY.inputs['Value'])
+    combineXYZ = node_tree.nodes.new('ShaderNodeCombineXYZ')
+    node_tree.links.new(pingPongX.outputs['Value'], combineXYZ.inputs['X'])
+    node_tree.links.new(pingPongY.outputs['Value'], combineXYZ.inputs['Y'])
+    return combineXYZ
+
+def createMaterial(matData, texData, image):
+    mat = bpy.data.materials.new(matData.name)
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes['Principled BSDF']
+    texImage = mat.node_tree.nodes.new('ShaderNodeTexImage')
+    texImage.image = image
+    if texData.extensionType == GX_CLAMP:
+        texImage.extension = 'EXTEND'
+    elif texData.extensionType == GX_REPEAT:
+        texImage.extension = 'REPEAT'
+    elif texData.extensionType == GX_MIRROR:
+        mirror = addMirror(mat.node_tree)
+        mat.node_tree.links.new(mirror.outputs['Vector'], texImage.inputs['Vector'])
+    mat.node_tree.links.new(texImage.outputs['Color'], bsdf.inputs['Base Color'])
+    mat.node_tree.links.new(texImage.outputs['Alpha'], bsdf.inputs['Alpha'])
+    mat.use_backface_culling = True
+    mat.blend_method = 'CLIP'
+    return mat
+
+def uvMap(obj, meshData, partData, material):
+    obj.data.materials.append(material)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(obj.data)
+    uv_layer = bm.loops.layers.uv.verify()
+    for face in bm.faces:
+        for loop in face.loops:
+            fdata = partData.faces[face.index]
+            idx = fdata.getMatchingTexCoord(loop.vert.index)
+            loop[uv_layer].uv = meshData.texCoords[idx]
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+def applyWeights(meshData, bones):
+    vertices = []
+    normals = []
+    for i in range(len(meshData.vertices)):
+        transform = Matrix.Diagonal((0, 0, 0, 0))
+        for idx, w in meshData.weights[i].items():
+            transform = transform + \
+                        w * (bones[idx].globalTransform @ \
+                             bones[idx].inverseBindMatrix)
+        vert = transform @ Vector(meshData.vertices[i])
+        vertices.append(tuple(vert))
+        transform = transform.to_3x3() # remove translation
+        norm = (transform @ Vector(meshData.vertNormals[i])).normalized()
+        normals.append(tuple(norm))
+    return vertices, normals
+
+def makeMesh(meshData, partData, bones):
+    m = bpy.data.meshes.new('mesh')
+    # define mesh geometry
+    if meshData.weights is not None:
+        v, n = applyWeights(meshData, bones)
+    else:
+        v = meshData.vertices
+        n = meshData.vertNormals
+    f = [face.vertexIndices for face in partData.faces]
+    m.from_pydata(v, [], f)
+    # set mesh vertex normals
+    m.use_auto_smooth = True
+    m.normals_split_custom_set_from_vertices(meshData.vertNormals) 
+    return m
+
+def makeObject(context, meshData, partData, material, bones):
+    m = makeMesh(meshData, partData, bones)
+    o = bpy.data.objects.new('mesh', m)
+    context.collection.objects.link(o)
+    context.view_layer.objects.active = o
+    # UV map object
+    if partData.usesTexCoords:
+        uvMap(o, meshData, partData, material)
+    # define vertex groups
+    if meshData.weights is not None:
+        for i in range(len(meshData.vertices)):
+            for idx, w in meshData.weights[i].items():
+                name = bones[idx].name
+                if name not in o.vertex_groups:
+                    o.vertex_groups.new(name=name)
+                o.vertex_groups[name].add([i], w, 'REPLACE')
+    return o
+
+def makeArmature_r(edit_bones, bones, boneIndex):
+    boneData = bones[boneIndex]
+    bone = edit_bones.new(boneData.name)
+    bone.tail = (0, 0, 1) # length = 1
+    bone.transform(boneData.globalTransform)
+    for childIndex in boneData.childIndices:
+        child = makeArmature_r(edit_bones, bones, childIndex)
+        child.parent = bone
+    return bone
+
+def makeArmature(context, skele):
+    bpy.ops.object.armature_add(enter_editmode=True)
+    
+    arma = context.object
+    arma.name = skele.name
+    
+    edit_bones = arma.data.edit_bones
+    edit_bones.remove(edit_bones['Bone'])
+
+    makeArmature_r(edit_bones, skele.bones, 0)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    return arma
+
+def importSDR(path, context):
+    model_data = parseSDR(path)
+
+    # save images
+    images = model_data['images']
+    for i in range(len(images)):
+        img = images[i]
+        image = bpy.data.images.new(f'image{i}', img.width, img.height)
+        # Blender expects values to be normalized
+        image.pixels = [(x / 255) for x in img.pixels]
+        path = f'{os.path.dirname(path)}\\texture{i}.png'
+        image.filepath_raw = path
+        image.file_format = 'PNG'
+        image.save()
+        images[i] = image
+    
+    # create materials
+    materials = model_data['materials']
+    textures = model_data['textures']
+
+    for i in range(len(materials)):
+        mat = materials[i]
+        if mat.textureIndex is not None:
+            tex = textures[mat.textureIndex]
+            img = images[tex.imageIndex]
+            materials[i] = createMaterial(mat, tex, img)
+        else:
+            materials[i] = bpy.data.materials.new('empty')
+
+    # make armatures
+    skeletons = model_data['skeletons']
+    meshes = model_data['meshes']
+    for skele in skeletons:
+        arma = makeArmature(context, skele)
+        arma.select_set(False)
+        for bone in skele.bones:
+            if bone.meshIndex != None:
+                mesh = meshes[bone.meshIndex]
+                parts = []
+                for part in mesh.parts:
+                    mat = materials[part.materialIndex]
+                    obj = makeObject(context, mesh, part, mat, skele.bones)
+                    obj.select_set(True)
+                    parts.append(obj)
+                context.view_layer.objects.active = parts[0]
+                bpy.ops.object.join()
+                
+                arma.select_set(True)
+                context.view_layer.objects.active = arma
+                bpy.ops.object.parent_set(type='ARMATURE')
+        arma.rotation_euler = Euler((math.pi / 2, 0, 0), 'XYZ')
