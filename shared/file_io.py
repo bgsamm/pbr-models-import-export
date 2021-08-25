@@ -48,9 +48,12 @@ class BinaryReader:
             nextChar = self.file.read(1)[0]
         return s
 
-    def read_chunk(self, address, size):
-        """Reads `size` bytes from `address`"""
-        self.seek(address)
+    def read_chunk(self, offset, size, whence='start'):
+        """
+        Reads `size` bytes from `offset`
+        relative to `whence` ('start' or 'current')
+        """
+        self.seek(offset, whence)
         return self.file.read(size)
 
     def seek(self, offset, whence='start'):

@@ -36,8 +36,9 @@ class Mesh:
         self.parts = []
         
 class MeshPart:
-    def __init__(self, f, usesTexCoords, matID):
-        self.usesTexCoords = usesTexCoords
+    def __init__(self, f, matID):
+        self.vertStride = 0
+        self.texStride = 0
         
         # filter out degenerate faces w/ repeated vertices
         self.faces = [face for face in f if len(set(face.vertexIndices)) == 3]

@@ -175,15 +175,14 @@ def parseFaces(file, address, numGroups, vertAttrs):
         vertices = []
         for j in range(count):
             v = n = t = None
-            for i in range(len(vertAttrs)):
-                if vertAttrs[i] == GX_VA_POS:
-                    v = file.read('ushort', 0, whence='current')
-                elif vertAttrs[i] in [GX_VA_NRM, GX_VA_NBT]:
-                    n = file.read('ushort', 0, whence='current')
-                elif vertAttrs[i] == GX_VA_TEX0:
-                    t = file.read('ushort', 0, whence='current')
-                else:
-                    file.read(2)
+            for attr in vertAttrs:
+                idx = file.read('ushort', 0, whence='current')
+                if attr == GX_VA_POS:
+                    v = idx
+                elif attr in [GX_VA_NRM, GX_VA_NBT]:
+                    n = idx
+                elif attr == GX_VA_TEX0:
+                    t = idx
             vertices.append((v, n, t))
         
         if op == GX_DRAW_QUADS:
@@ -209,16 +208,16 @@ def parseFaces(file, address, numGroups, vertAttrs):
     return faces
 
 def parseMesh(file, address):
-    meshHeaderAddr = file.read('uint', address, offset=0x18)
-    vertInfoAddr = file.read('uint', meshHeaderAddr, offset=0x10)
-    attr = file.read('uchar', vertInfoAddr)
-    while attr != 0xff:
-        stride = file.read('uchar', 0x4, whence='current')
-        if attr == GX_VA_POS:
-            vertStride = stride
-        elif attr == GX_VA_TEX0:
-            texStride = stride
-        attr = file.read('uchar', 0x2, whence='current')
+    meshAddr = file.read('uint', address, offset=0x18)
+    parts = []
+    for mesh in parseMeshPart(file, meshAddr):
+        parts.append(mesh)
+    vertStride = max([part.vertStride for part in parts])
+    assert vertStride != 0
+    assert all([part.vertStride == vertStride for part in parts])
+    texStride = max([part.texStride for part in parts])
+    assert all([part.texStride == 0 or part.texStride == texStride
+                for part in parts])
     
     # vertices
     numVertices = file.read('ushort', address, offset=0x2)
@@ -229,7 +228,7 @@ def parseMesh(file, address):
     # texture coordinates
     uvLayerAddr = file.read('uint', address, offset=0x14)
     t = None
-    if uvLayerAddr != 0:
+    if uvLayerAddr != 0 and texStride > 0:
         texCoordsAddr = file.read('uint', uvLayerAddr, offset=0)
         numTexCoords = file.read('ushort', uvLayerAddr, offset=0x4)
         t = parseTextureCoords(file, texCoordsAddr, numTexCoords, texStride)
@@ -242,23 +241,26 @@ def parseMesh(file, address):
         w = None
 
     meshGroup = Mesh(v, n, t, w)
-    for mesh in parseMeshPart(file, meshHeaderAddr):
-        meshGroup.parts.append(mesh)
+    meshGroup.parts = parts
     return meshGroup
 
 def parseMeshPart(file, address):
     vertInfoAddr = file.read('uint', address, offset=0x10)
-    vas = []
-    va = file.read('uchar', vertInfoAddr)
-    while va != 0xff:
-        vas.append(va)
-        va = file.read('uchar', 0x7, whence='current')
+    vas = {}
+    va = list(file.read_chunk(vertInfoAddr, 6))
+    while va[0] != 0xff:
+        vas[va[0]] = va
+        va = list(file.read_chunk(0x2, 6, whence='current'))
     
     materialAddr = file.read('uint', address, offset=0x8)
     numGroups = file.read('ushort', address, offset=0xc)
     facesAddr = file.read('uint', address, offset=0x14)
     f = parseFaces(file, facesAddr, numGroups, vas)
-    mesh = MeshPart(f, GX_VA_TEX0 in vas, mat_dict[materialAddr]['index'])
+    mesh = MeshPart(f, mat_dict[materialAddr]['index'])
+    if GX_VA_POS in vas:
+        mesh.vertStride = vas[GX_VA_POS][5]
+    if GX_VA_TEX0 in vas:
+        mesh.texStride = vas[GX_VA_TEX0][5]
     yield mesh
     
     # check if there is a next part of the mesh
@@ -292,15 +294,15 @@ def parseBones(file, address, bones):
     else:
         pos = Matrix.Identity(4)
 
-    rot = Matrix.Identity(4)
-##    rotAddr = file.read('uint', address, offset=0x10)
-##    if rotAddr != 0:
-##        rx = file.read('float', rotAddr)
-##        ry = file.read('float', 0, whence='current')
-##        rz = file.read('float', 0, whence='current')
-##        rot = toRotationMatrix(rx, ry, rz)
-##    else:
-##        rot = Matrix.Identity(4)
+##    rot = Matrix.Identity(4)
+    rotAddr = file.read('uint', address, offset=0x10)
+    if rotAddr != 0:
+        rx = file.read('float', rotAddr)
+        ry = file.read('float', 0, whence='current')
+        rz = file.read('float', 0, whence='current')
+        rot = toRotationMatrix(rx, ry, rz)
+    else:
+        rot = Matrix.Identity(4)
     
     scaAddr = file.read('uint', address, offset=0x14)
     if scaAddr != 0:
@@ -481,7 +483,7 @@ def makeObject(context, meshData, partData, material, bones):
     context.collection.objects.link(o)
     context.view_layer.objects.active = o
     # UV map object
-    if partData.usesTexCoords:
+    if partData.texStride > 0:
         uvMap(o, meshData, partData, material)
     # define vertex groups
     if meshData.weights is not None:
