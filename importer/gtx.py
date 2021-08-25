@@ -11,7 +11,6 @@ def bytesToRGB565(b1, b2):
     return [r, g, b, a]
 
 def bytesToRGB5A3(b1, b2):
-##    print(b1, b2)
     if b1 & 0x80 == 0:
         r = (b1 & 0xf) * 0x11
         g = ((b2 & 0xf0) >> 4) * 0x11
@@ -22,7 +21,6 @@ def bytesToRGB5A3(b1, b2):
         g = ((b1 & 0x3) << 6) + ((b2 & 0xe0) >> 2)
         b = (b2 & 0x1f) << 3
         a = 0xff
-##    print([r,g,b,a])
     return [r, g, b, a]
 
 def interpolate(v1, v2, weight):
@@ -49,8 +47,8 @@ def parseImageData(byte_arr, img_width, img_height, encoding):
     rgba = []
     num_blocks_x = math.ceil(img_width / block_width)
     num_blocks_y = math.ceil(img_height / block_height)
-    for row in range(num_blocks_y):
-        for n in range(block_height):
+    for row in range(num_blocks_y - 1, -1, -1):
+        for n in range(block_height - 1, -1, -1):
             for col in range(num_blocks_x):
                 loc = (row * block_width * block_height * num_blocks_x \
                        + col * block_width * block_height \
@@ -83,8 +81,8 @@ def parseRGBA32Data(byte_arr, img_width, img_height):
     rgba = []
     num_blocks_x = math.ceil(img_width / block_width)
     num_blocks_y = math.ceil(img_height / block_height)
-    for row in range(num_blocks_y):
-        for n in range(block_height):
+    for row in range(num_blocks_y - 1, -1, -1):
+        for n in range(block_height - 1, -1, -1):
             for col in range(num_blocks_x):
                 loc = (row * block_width * block_height * num_blocks_x \
                        + col * block_width * block_height \
@@ -119,9 +117,9 @@ def parseCMPRData(byte_arr, img_width, img_height):
     # each sub-block is 4 pixels wide
     num_blocks_x = math.ceil(img_width / (block_width * 4))
     num_blocks_y = math.ceil(img_height / (block_height * 4))
-    for r in range(num_blocks_y):
+    for r in range(num_blocks_y - 1, -1, -1):
         # each block is 8 pixels tall
-        for i in range(8):
+        for i in range(7, -1, -1):
             for c in range(num_blocks_x):
                 for j in range(block_width):
                     # every sub-block consists of 8 bytes

@@ -114,7 +114,7 @@ def parseTextureCoords(file, address, numEntries, stride):
     for i in range(numEntries):
         x = file.read('float', address, offset=(i * stride))
         # mirror vertically
-        y = file.read('float', 0, whence='current')
+        y = 1.0 - file.read('float', 0, whence='current')
         texcoords.append((x, y))
     return texcoords
 
@@ -298,7 +298,7 @@ def parseBones(file, address, bones):
 ##        rot = toRotationMatrix(rx, ry, rz)
 ##    else:
 ##        rot = Matrix.Identity(4)
-        
+    
     scaAddr = file.read('uint', address, offset=0x14)
     if scaAddr != 0:
         file.seek(scaAddr)
@@ -308,7 +308,7 @@ def parseBones(file, address, bones):
         sca = toScaleMatrix(sx, sy, sz)
     else:
         sca = Matrix.Identity(4)
-        
+    
     if k == 0x2:
         # secondary rotation
         rx = file.read('float', address, offset=0x34)
@@ -331,7 +331,6 @@ def parseBones(file, address, bones):
                [0.0, 0.0, 1.0, 0.0],
                [0.0, 0.0, 0.0, 1.0]]
     mat = Matrix(mat)
-        
     bone = Bone(idx, name, (pos @ rot @ sca), mat)
     bones[idx] = bone
     
