@@ -49,8 +49,8 @@ def flattenIndexedDict(d):
 def parseTextures(file, address, numTextures):
     for i in range(numTextures):
         textureAddr = file.read('uint', address, offset=(4 * i))
-        # technically this is the horizontal extrapolation but
-        # just gonna use it for both right now
+        # technically this is the horizontal extrapolation
+        # but just gonna use it for both right now
         extrap = file.read('uint', textureAddr, offset=0x10)
         imageOffset = file.read('uint', textureAddr, offset=0x28)
         imageAddr = textureAddr + imageOffset
@@ -269,16 +269,16 @@ def parseMeshPart(file, address):
         for mesh in parseMeshPart(file, nextMeshAddr):
             yield mesh
 
-def parseSkeleton(file, address):
+def parseSkeleton(file, address, useDefaultPose=False):
     objNameAddr = file.read('uint', address, offset=0)
     name = file.read('string', objNameAddr)
     numBones = file.read('ushort', address, offset=0x6)
     rootAddr = file.read('uint', address, offset=0x10)
     bones = [None] * numBones
-    rootBone = next(parseBones(file, rootAddr, bones))
+    rootBone = next(parseBones(file, rootAddr, bones, useDefaultPose))
     return Skeleton(name, numBones, bones)
 
-def parseBones(file, address, bones):
+def parseBones(file, address, bones, useDefaultPose=False):
     k = file.read('uint', address, offset=0)
     nameAddr = file.read('uint', address, offset=0x4)
     name = file.read('string', nameAddr)
@@ -294,15 +294,17 @@ def parseBones(file, address, bones):
     else:
         pos = Matrix.Identity(4)
 
-    rot = Matrix.Identity(4)
-##    rotAddr = file.read('uint', address, offset=0x10)
-##    if rotAddr != 0:
-##        rx = file.read('float', rotAddr)
-##        ry = file.read('float', 0, whence='current')
-##        rz = file.read('float', 0, whence='current')
-##        rot = toRotationMatrix(rx, ry, rz)
-##    else:
-##        rot = Matrix.Identity(4)
+    if useDefaultPose:
+        rotAddr = file.read('uint', address, offset=0x10)
+        if rotAddr != 0:
+            rx = file.read('float', rotAddr)
+            ry = file.read('float', 0, whence='current')
+            rz = file.read('float', 0, whence='current')
+            rot = toRotationMatrix(rx, ry, rz)
+        else:
+            rot = Matrix.Identity(4)
+    else:
+        rot = Matrix.Identity(4)
     
     scaAddr = file.read('uint', address, offset=0x14)
     if scaAddr != 0:
@@ -341,7 +343,7 @@ def parseBones(file, address, bones):
     
     childAddr = file.read('uint', address, offset=0x24)
     if childAddr != 0:
-        for child in parseBones(file, childAddr, bones):
+        for child in parseBones(file, childAddr, bones, useDefaultPose):
             bone.childIndices.append(child.index)
             child.parentIndex = idx
             
@@ -357,10 +359,10 @@ def parseBones(file, address, bones):
     
     nextAddr = file.read('uint', address, offset=0x28)
     if nextAddr != 0:
-        for sibling in parseBones(file, nextAddr, bones):
+        for sibling in parseBones(file, nextAddr, bones, useDefaultPose):
             yield sibling
 
-def parseSDR(path):
+def parseSDR(path, useDefaultPose=False):
     global mesh_dict, mat_dict, tex_dict, img_dict
     mesh_dict = {}
     mat_dict = {}
@@ -385,7 +387,8 @@ def parseSDR(path):
     skeletons = []
     for i in range(numSkeletons):
         skeletonHeaderAddr = file.read('uint', skeletonsListAddrPtr + 4 * i)
-        skeletons.append(parseSkeleton(file, skeletonHeaderAddr))
+        skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose)
+        skeletons.append(skele)
     
     file.close()
     
@@ -519,8 +522,8 @@ def makeArmature(context, skele):
     
     return arma
 
-def importSDR(path, context):
-    model_data = parseSDR(path)
+def importSDR(context, path, useDefaultPose=False):
+    model_data = parseSDR(path, useDefaultPose)
 
     # save images
     images = model_data['images']

@@ -21,7 +21,6 @@ from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
 from bpy_extras.io_utils import ExportHelper
 
-import os, math
 from .importer import importer
 from .exporter import exporter
 
@@ -35,9 +34,22 @@ class ImportModel(Operator, ImportHelper):
         default='*.sdr',
         options={'HIDDEN'}
     )
+
+    use_default_pose: bpy.props.BoolProperty(
+        name='Import In Default Pose',
+        description="Some models' bind poses are pretty funky at " + \
+                    "the moment. Enable\nthis to import models in " + \
+                    "their default pose instead",
+        default=False
+    )
     
     def execute(self, context):
-        importer.importSDR(self.filepath, context)
+        importer.importSDR(context, self.filepath,
+                           useDefaultPose=self.use_default_pose)
+        # set viewport shading to Material Preview in Layout view
+        view = [space for area in bpy.data.screens['Layout'].areas
+                for space in area.spaces if space.type == 'VIEW_3D'][0]
+        view.shading.type = 'MATERIAL'
         return {'FINISHED'}
 
 class ExportModel(Operator, ExportHelper):
