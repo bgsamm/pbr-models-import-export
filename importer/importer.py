@@ -561,9 +561,11 @@ def importSDR(context, path, useDefaultPose=False):
             if bone.meshIndex != None:
                 mesh = meshes[bone.meshIndex]
                 parts = []
+                bpy.ops.object.select_all(action='DESELECT')
                 for part in mesh.parts:
                     mat = materials[part.materialIndex]
                     obj = makeObject(context, mesh, part, mat, skele.bones)
+                    obj.name = bone.name
                     obj.select_set(True)
                     parts.append(obj)
                 context.view_layer.objects.active = parts[0]
