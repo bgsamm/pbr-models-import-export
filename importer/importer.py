@@ -49,9 +49,6 @@ def flattenIndexedDict(d):
 def parseTextures(file, address, numTextures):
     for i in range(numTextures):
         textureAddr = file.read('uint', address, offset=(4 * i))
-        # technically this is the horizontal extrapolation
-        # but just gonna use it for both right now
-        extrap = file.read('uint', textureAddr, offset=0x10)
         imageOffset = file.read('uint', textureAddr, offset=0x28)
         imageAddr = textureAddr + imageOffset
         if imageAddr not in img_dict:
@@ -60,7 +57,9 @@ def parseTextures(file, address, numTextures):
                 'object': img,
                 'index': len(img_dict)
             }
-        tex = Texture(img_dict[imageAddr]['index'], extrap)
+        extrapX = file.read('uint', textureAddr, offset=0x10)
+        extrapY = file.read('uint', textureAddr, offset=0x14)
+        tex = Texture(img_dict[imageAddr]['index'], (extrapX, extrapY))
         tex_dict[textureAddr] = {
             'object': tex,
             'index': len(tex_dict)
@@ -401,21 +400,28 @@ def parseSDR(path, useDefaultPose=False):
     }
     return sdr
 
-def addMirror(node_tree):
+def createExtensionNodes(node_tree, extension_x, extension_y):
     texCoord = node_tree.nodes.new('ShaderNodeTexCoord')
     separateXYZ = node_tree.nodes.new('ShaderNodeSeparateXYZ')
     node_tree.links.new(texCoord.outputs['UV'], separateXYZ.inputs['Vector'])
-    pingPongX = node_tree.nodes.new('ShaderNodeMath')
-    pingPongX.operation = 'PINGPONG'
-    pingPongX.inputs[1].default_value = 1.0
-    pingPongY = node_tree.nodes.new('ShaderNodeMath')
-    pingPongY.operation = 'PINGPONG'
-    pingPongY.inputs[1].default_value = 1.0
-    node_tree.links.new(separateXYZ.outputs['X'], pingPongX.inputs['Value'])
-    node_tree.links.new(separateXYZ.outputs['Y'], pingPongY.inputs['Value'])
+    mathNodeX = node_tree.nodes.new('ShaderNodeMath')
+    mathNodeY = node_tree.nodes.new('ShaderNodeMath')
+    for node, ext in [(mathNodeX, extension_x), (mathNodeY, extension_y)]:
+        if ext == GX_CLAMP:
+            node.operation = 'MINIMUM'
+            node.inputs[1].default_value = 1.0
+        elif ext == GX_REPEAT:
+            node.operation = 'WRAP'
+            node.inputs[1].default_value = 1.0
+            node.inputs[2].default_value = 0.0
+        elif ext == GX_MIRROR:
+            node.operation = 'PINGPONG'
+            node.inputs[1].default_value = 1.0
+    node_tree.links.new(separateXYZ.outputs['X'], mathNodeX.inputs['Value'])
+    node_tree.links.new(separateXYZ.outputs['Y'], mathNodeY.inputs['Value'])
     combineXYZ = node_tree.nodes.new('ShaderNodeCombineXYZ')
-    node_tree.links.new(pingPongX.outputs['Value'], combineXYZ.inputs['X'])
-    node_tree.links.new(pingPongY.outputs['Value'], combineXYZ.inputs['Y'])
+    node_tree.links.new(mathNodeX.outputs['Value'], combineXYZ.inputs['X'])
+    node_tree.links.new(mathNodeY.outputs['Value'], combineXYZ.inputs['Y'])
     return combineXYZ
 
 def createMaterial(matData, texData, image):
@@ -424,13 +430,9 @@ def createMaterial(matData, texData, image):
     bsdf = mat.node_tree.nodes['Principled BSDF']
     texImage = mat.node_tree.nodes.new('ShaderNodeTexImage')
     texImage.image = image
-    if texData.extensionType == GX_CLAMP:
-        texImage.extension = 'EXTEND'
-    elif texData.extensionType == GX_REPEAT:
-        texImage.extension = 'REPEAT'
-    elif texData.extensionType == GX_MIRROR:
-        mirror = addMirror(mat.node_tree)
-        mat.node_tree.links.new(mirror.outputs['Vector'], texImage.inputs['Vector'])
+    texImage.extension = 'EXTEND'
+    extension = createExtensionNodes(mat.node_tree, *texData.extensionType)
+    mat.node_tree.links.new(extension.outputs['Vector'], texImage.inputs['Vector'])
     mat.node_tree.links.new(texImage.outputs['Color'], bsdf.inputs['Base Color'])
     mat.node_tree.links.new(texImage.outputs['Alpha'], bsdf.inputs['Alpha'])
     mat.use_backface_culling = True
