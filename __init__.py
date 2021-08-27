@@ -6,14 +6,14 @@ bl_info = {
 }
 
 if 'bpy' in locals():
-    print('Reloading modules...')
+    print('Reloading pbr-models-import-export...')
     import sys, importlib
     for name in list(sys.modules):
         if name.startswith('pbr-models-import-export'):
             if '.' not in name:
-                print('Reloaded .')
+                print('   Reloaded .')
             else:
-                print('Reloaded', name[name.index('.'):])
+                print('   Reloaded', name[name.index('.'):])
             importlib.reload(sys.modules[name])
 
 import bpy
