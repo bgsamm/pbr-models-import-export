@@ -53,7 +53,7 @@ class ImportModel(Operator, ImportHelper):
         return {'FINISHED'}
 
 class ExportModel(Operator, ExportHelper):
-    """Import a model from Pokémon Battle Revolution"""
+    """Export a model for use in Pokémon Battle Revolution"""
     bl_idname = "pbr.export"
     bl_label = "PBR Model (.sdr)"
     bl_options = {'REGISTER', 'UNDO'}

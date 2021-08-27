@@ -6,7 +6,7 @@ import bpy, bmesh
 from ..shared import gtx
 from ..shared.classes import *
 from ..shared.const import *
-from ..shared.file_io import *
+from ..shared.file_io import BinaryReader
 
 encodings = {
         #0x30: ???

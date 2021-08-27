@@ -50,6 +50,7 @@ class Bone:
         self.name = name
         
         self.localTransform = trans
+        # self.globalTransform calculated by Skeleton
         self.inverseBindMatrix = mat
 
         self.childIndices = []

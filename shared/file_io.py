@@ -68,6 +68,10 @@ class BinaryReader:
         else:
             raise ValueError(f'Invalid value for `whence`: {whence}')
 
+    def tell(self):
+        """Returns the BinaryReader's current position"""
+        return self.file.tell()
+
     def close(self):
         """Closes the BinaryReader's file"""
         self.file.close()
@@ -98,29 +102,38 @@ class BinaryWriter(BinaryReader):
     def __init__(self, path):
         self.file = open(path, 'wb+')
 
-    def write(type, data, offset, whence='start'):
+    def write(self, type, data, base, offset=0, whence='start'):
         """
         Writes `data` as type `type` to `offset`
         relative to `whence` ('start' or 'current')
         """
-        self.seek(offset, whence)
+        self.seek(base + offset, whence)
         
-        if type == 'uint8':
+        if type == 'uchar':
             return self.file.write(struct.pack('>B', data))
-        if type == 'uint16':
+        if type == 'ushort':
             return self.file.write(struct.pack('>H', data))
-        if type == 'uint32':
+        if type == 'uint':
             return self.file.write(struct.pack('>I', data))
-        if type == 'int8':
+        if type == 'char':
             return self.file.write(struct.pack('>b', data))
-        if type == 'int16':
+        if type == 'short':
             return self.file.write(struct.pack('>h', data))
-        if type == 'int32':
+        if type == 'int':
             return self.file.write(struct.pack('>i', data))
         if type == 'float':
             return self.file.write(struct.pack('>f', data))
         if type == 'double':
             return self.file.write(struct.pack('>d', data))
         if type == 'string':
-            return self.file.write(bytes(data, 'ascii'))
+            # strings should be null terminated
+            return self.file.write(bytes(data, 'ascii') + b'\x00')
         raise ValueError(f'Invalid value for arg `type`: {type}')
+
+    def write_chunk(self, data, offset, whence='start'):
+        """
+        Writes `data` to `offset` relative
+        to `whence` ('start' or 'current')
+        """
+        self.seek(offset, whence)
+        return self.file.write(data)
