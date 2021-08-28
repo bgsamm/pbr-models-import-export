@@ -529,7 +529,7 @@ def makeObject(context, meshData, partData, material, bones):
 def makeArmature_r(edit_bones, bones, boneIndex):
     boneData = bones[boneIndex]
     bone = edit_bones.new(boneData.name)
-    bone.tail = (0, 0, 1) # length = 1
+    bone.tail = (0, 0, 0.5) # length = 0.5
     bone.transform(boneData.globalTransform)
     for childIndex in boneData.childIndices:
         child = makeArmature_r(edit_bones, bones, childIndex)
