@@ -151,10 +151,38 @@ def writeBone(file, address, bone):
     # if bone name is the same as a child mesh, mark it as a skin node
     if isSkin(bone.name):
         file.write('uint', 0x3, address)
-        nameAddr = address + 0x3c
+        nextAddr = address + 0x3c
     else:
-        nameAddr = address + 0x30
+        nextAddr = address + 0x30
 
+    # skin bones cannot have any transformation
+    if not isSkin(bone.name):
+        if bone.parent is not None:
+            transform = bone.parent.matrix_local.inverted() @ bone.matrix_local
+            t,r,s = transform.decompose()
+        else:
+            t,r,s = bone.matrix_local.decompose()
+        r = r.to_euler()
+        if any(f != 0.0 for f in r):
+            file.write('uint', 0x2, address)
+            file.write('float', r[0], address, offset=0x34)
+            file.write('float', r[1], 0, whence='current')
+            file.write('float', r[2], 0, whence='current')
+            nextAddr += 72 # leave room for inverse bind matrix
+        if any(f != 0.0 for f in t):
+            file.write('uint', nextAddr, address, offset=0xc)
+            file.write('float', t[0], nextAddr)
+            file.write('float', t[1], 0, whence='current')
+            file.write('float', t[2], 0, whence='current')
+            nextAddr += 12
+        if any(f != 1.0 for f in s):
+            file.write('uint', nextAddr, address, offset=0x14)
+            file.write('float', s[0], nextAddr)
+            file.write('float', s[1], 0, whence='current')
+            file.write('float', s[2], 0, whence='current')
+            nextAddr += 12
+    
+    nameAddr = nextAddr
     file.write('uint', nameAddr, address, offset=0x4)
     idx = bones.find(bone.name)
     file.write('ushort', idx, address, offset=0x8)
