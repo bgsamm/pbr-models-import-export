@@ -77,14 +77,6 @@ def decompressImage(file, texAddress, imageAddr):
     image = Image(imageData, width, height)
     return image
 
-def parseMaterials(file, address, numMaterials):
-    for i in range(numMaterials):
-        materialAddr = file.read('uint', address, offset=(4 * i))
-        mat_dict[materialAddr] = {
-            'object': parseMaterial(file, materialAddr),
-            'index': len(mat_dict)
-        }
-
 def parseMaterial(file, address):
     nameAddr = file.read('uint', address, offset=0)
     name = file.read('string', nameAddr)
@@ -361,7 +353,7 @@ def parseBones(file, address, bones, useDefaultPose=False):
         for sibling in parseBones(file, nextAddr, bones, useDefaultPose):
             yield sibling
 
-def parseSDR(path, useDefaultPose=False):
+def parseModel(path, useDefaultPose=False):
     global mesh_dict, mat_dict, tex_dict, img_dict
     mesh_dict = {}
     mat_dict = {}
@@ -370,24 +362,58 @@ def parseSDR(path, useDefaultPose=False):
 
     file = BinaryReader(path)
 
-    # textures
-    texturesListAddr = file.read('uint', 0xc)
-    numTextures = file.read('ushort', 0x1a)
-    parseTextures(file, texturesListAddr, numTextures)
-    
-    # materials
-    materialsListAddr = file.read('uint', 0x14)
-    numMaterials = file.read('ushort', 0x1e)
-    parseMaterials(file, materialsListAddr, numMaterials)
-    
     # skeleton
-    skeletonsListAddrPtr = file.read('uint', 0x8)
-    numSkeletons = file.read('ushort', 0x18)
     skeletons = []
-    for i in range(numSkeletons):
-        skeletonHeaderAddr = file.read('uint', skeletonsListAddrPtr + 4 * i)
+
+    if path[-4:] == '.mdr':
+        texturesListAddr = file.read('uint', 0x8)
+        numTextures = file.read('ushort', 0xc)
+        parseTextures(file, texturesListAddr, numTextures)
+
+        materialAddr = file.read('uint', 0x18)
+        mat_dict[materialAddr] = {
+            'object': parseMaterial(file, materialAddr),
+            'index': len(mat_dict)
+        }
+
+    elif path[-4:] == '.odr':
+        texturesListAddr = file.read('uint', 0xc)
+        numTextures = file.read('ushort', 0x18)
+        parseTextures(file, texturesListAddr, numTextures)
+
+        materialsListAddr = file.read('uint', 0x14)
+        numMaterials = file.read('ushort', 0x1c)
+        for i in range(numMaterials):
+            materialAddr = file.read('uint', materialsListAddr, offset=(4 * i))
+            mat_dict[materialAddr] = {
+                'object': parseMaterial(file, materialAddr),
+                'index': len(mat_dict)
+            }
+
+        skeletonHeaderAddr = file.read('uint', 0x8)
         skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose)
         skeletons.append(skele)
+    else:
+        texturesListAddr = file.read('uint', 0xc)
+        numTextures = file.read('ushort', 0x1a)
+        parseTextures(file, texturesListAddr, numTextures)
+
+        materialsListAddr = file.read('uint', 0x14)
+        numMaterials = file.read('ushort', 0x1e)
+        for i in range(numMaterials):
+            materialAddr = file.read('uint', address, offset=(4 * i))
+            mat_dict[materialAddr] = {
+                'object': parseMaterial(file, materialAddr),
+                'index': len(mat_dict)
+            }
+
+        skeletonsListAddrPtr = file.read('uint', 0x8)
+        numSkeletons = file.read('ushort', 0x18)
+        for i in range(numSkeletons):
+            skeletonHeaderAddr = file.read('uint', skeletonsListAddrPtr + 4 * i)
+            skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose)
+            skeletons.append(skele)
+        
     
     file.close()
     
@@ -525,7 +551,7 @@ def makeArmature(context, skele):
     return arma
 
 def importSDR(context, path, useDefaultPose=False):
-    model_data = parseSDR(path, useDefaultPose)
+    model_data = parseModel(path, useDefaultPose)
 
     # save images
     images = model_data['images']
