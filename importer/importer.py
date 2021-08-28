@@ -401,7 +401,7 @@ def parseModel(path, useDefaultPose=False):
         materialsListAddr = file.read('uint', 0x14)
         numMaterials = file.read('ushort', 0x1e)
         for i in range(numMaterials):
-            materialAddr = file.read('uint', address, offset=(4 * i))
+            materialAddr = file.read('uint', materialsListAddr, offset=(4 * i))
             mat_dict[materialAddr] = {
                 'object': parseMaterial(file, materialAddr),
                 'index': len(mat_dict)
