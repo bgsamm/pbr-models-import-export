@@ -31,7 +31,7 @@ class ImportModel(Operator, ImportHelper):
     bl_options = {'REGISTER', 'UNDO'}
 
     filter_glob: bpy.props.StringProperty(
-        default='*.sdr',
+        default='*.sdr;*.mdr;*.odr',
         options={'HIDDEN'}
     )
 
