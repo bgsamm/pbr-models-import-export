@@ -16,6 +16,10 @@ def isSkin(name):
 def getMatTexture(material):
     return [n for n in material.node_tree.nodes if n.type == 'TEX_IMAGE'][0]
 
+def getVertexGroupBoneIndex(object, groupID):
+    return [bone.name for bone in bones] \
+           .index(object.vertex_groups[groupID].name)
+
 # still a little slow but acceptable; should pre-allocate
 def imageToRGB5A3(image):
     w,h = image.size
@@ -156,19 +160,22 @@ def writeBone(file, address, bone):
         nextAddr = address + 0x30
 
     # skin bones cannot have any transformation
-    if not isSkin(bone.name):
-        if bone.parent is not None:
-            transform = bone.parent.matrix_local.inverted() @ bone.matrix_local
-            t,r,s = transform.decompose()
-        else:
-            t,r,s = bone.matrix_local.decompose()
+    if not isSkin(bone.name) and bone.parent is not None:
+        transform = bone.parent.matrix_local.inverted() @ bone.matrix_local
+        t,r,s = transform.decompose()
         r = r.to_euler()
-        if any(f != 0.0 for f in r):
+        if any(f != 0.0 for f in [*t, *r]) or any(f != 1.0 for f in s):
             file.write('uint', 0x2, address)
+            # inverse bind matrix
+            file.seek(address + 0x44)
+            for row in bone.matrix_local.inverted()[:3]:
+                for f in row:
+                    file.write('float', f, 0, whence='current')
+            nextAddr += 72
+        if any(f != 0.0 for f in r):
             file.write('float', r[0], address, offset=0x34)
             file.write('float', r[1], 0, whence='current')
             file.write('float', r[2], 0, whence='current')
-            nextAddr += 72 # leave room for inverse bind matrix
         if any(f != 0.0 for f in t):
             file.write('uint', nextAddr, address, offset=0xc)
             file.write('float', t[0], nextAddr)
@@ -236,14 +243,10 @@ def writeMesh(file, address, object):
     numVerts = len(mesh.vertices)
     file.write('ushort', numVerts, address, offset=0x2)
     file.write('ushort', 0x1, address, offset=0x6) # num. uv layers
+    
+    # vertices & normals
     vertsAddr = address + 0x30
     file.write('uint', vertsAddr, address, offset=0x8)
-    uvCoordsAddr = vertsAddr + len(mesh.vertices) * 0x18
-    file.write('uint', uvCoordsAddr, address, offset=0x14)
-    facesAddr = uvCoordsAddr + len(mesh.loops) * 0x8 + 0x8
-    file.write('uint', facesAddr, address, offset=0x18)
-
-    # write vertices & normals
     file.seek(vertsAddr)
     for v in mesh.vertices:
         # vertex
@@ -253,7 +256,60 @@ def writeMesh(file, address, object):
         for f in v.normal:
             file.write('float', f, 0, whence='current')
 
-    # write uv coordinates
+    # weights getVertexGroupBoneIndex
+    skinAddr = file.tell()
+    file.write('uint', skinAddr, address, offset=0xc)
+    file.write('ushort', len(mesh.vertices), skinAddr, offset=0x8)
+    file.write('ushort', len(mesh.vertices), skinAddr, offset=0xa)
+    groupsListAddr = skinAddr + 0x1c
+    file.write('uint', groupsListAddr, skinAddr, offset=0xc)
+    weightsListAddr = groupsListAddr + 6 * len(mesh.vertices)
+    file.write('uint', weightsListAddr, skinAddr, offset=0x10)
+    for i in range(len(mesh.vertices)):
+        v = mesh.vertices[i]
+        assert len(v.groups) >= 1 and len(v.groups) <= 4
+        file.write('ushort', 1, groupsListAddr, offset=(6 * i))
+        b1 = getVertexGroupBoneIndex(object, v.groups[0].group)
+        file.write('ushort', b1, 0, whence='current')
+        if len(v.groups) > 1:
+            b2 = getVertexGroupBoneIndex(object, v.groups[1].group)
+            file.write('ushort', b2, 0, whence='current')
+            w1 = v.groups[0].weight
+            w2 = v.groups[1].weight
+            # weights are out of 0xffff
+            # normalize in case there are > 2 groups
+            weight = round(0xffff * (w1 / (w1 + w2)))
+        else:
+            file.write('ushort', 0, 0, whence='current')
+            # only one group, give entire weight to it
+            weight = 0xffff
+        file.write('ushort', weight, weightsListAddr, offset=(2 * i))
+    groupsListAddr = file.tell()
+    file.write('uint', groupsListAddr, skinAddr, offset=0x18)
+    n = 0
+    file.seek(groupsListAddr)
+    for v in mesh.vertices:
+        if len(v.groups) > 2:
+            file.write('ushort', v.index, 0, whence='current')
+            b1 = getVertexGroupBoneIndex(object, v.groups[2].group)
+            w1 = round(v.groups[2].weight * 0xffff)
+            if len(v.groups) == 4:
+                b2 = getVertexGroupBoneIndex(object, v.groups[3].group)
+                w2 = round(v.groups[3].weight * 0xffff)
+            else:
+                b2 = 0xffff
+                w2 = 0
+            file.write('ushort', b1, 0, whence='current')
+            file.write('ushort', b2, 0, whence='current')
+            file.write('ushort', w1, 0, whence='current')
+            file.write('ushort', w2, 0, whence='current')
+            n += 1
+    nextAddr = file.tell()
+    file.write('ushort', n, skinAddr, offset=0x14)
+
+    # uv coordinates
+    uvCoordsAddr = nextAddr
+    file.write('uint', uvCoordsAddr, address, offset=0x14)
     file.write('uint', uvCoordsAddr + 0x8, uvCoordsAddr) # start of uv coords
     file.write('ushort', len(mesh.loops), uvCoordsAddr, offset=0x4)
     uvMap = mesh.uv_layers.active.data
@@ -262,8 +318,10 @@ def writeMesh(file, address, object):
         coords = uvMap[loop.index].uv
         file.write('float', coords[0], 0, whence='current') # x
         file.write('float', 1.0 - coords[1], 0, whence='current') # y
-
-    # write face groups
+    
+    # face groups
+    facesAddr = file.tell()
+    file.write('uint', facesAddr, address, offset=0x18)
     for i in range(len(object.material_slots)):
         file.write('uint', 0x1, facesAddr)
         faces = [face for face in mesh.polygons if face.material_index == i]
@@ -289,11 +347,9 @@ def writeMesh(file, address, object):
             file.write('ushort', face.vertices[1], 0, whence='current') # vertex
             file.write('ushort', face.vertices[1], 0, whence='current') # normal
             file.write('ushort', face.loop_indices[1], 0, whence='current') # uv coord
-
             file.write('ushort', face.vertices[0], 0, whence='current')
             file.write('ushort', face.vertices[0], 0, whence='current')
             file.write('ushort', face.loop_indices[0], 0, whence='current')
-
             file.write('ushort', face.vertices[2], 0, whence='current')
             file.write('ushort', face.vertices[2], 0, whence='current')
             file.write('ushort', face.loop_indices[2], 0, whence='current')
@@ -305,21 +361,18 @@ def writeMesh(file, address, object):
         file.write('uchar', 0x0, 0, whence='current')
         file.write('uchar', 0x3, 0, whence='current')
         file.write('uchar', 0x18, 0, whence='current') # stride
-
         file.write('uchar', 0xa, 2, whence='current') # normals
         file.write('uchar', 0x0, 0, whence='current')
         file.write('uchar', 0x4, 0, whence='current')
         file.write('uchar', 0x0, 0, whence='current')
         file.write('uchar', 0x3, 0, whence='current')
         file.write('uchar', 0x18, 0, whence='current') # stride
-
         file.write('uchar', 0xd, 2, whence='current') # uv coords
         file.write('uchar', 0x1, 0, whence='current')
         file.write('uchar', 0x4, 0, whence='current')
         file.write('uchar', 0x0, 0, whence='current')
         file.write('uchar', 0x3, 0, whence='current')
         file.write('uchar', 0x8, 0, whence='current') # stride
-
         file.write('uchar', 0xff, 2, whence='current')
 
         nextAddr = vertInfoAddr + 0xc0
