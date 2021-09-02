@@ -550,7 +550,7 @@ def makeArmature(context, skele):
     
     return arma
 
-def importSDR(context, path, useDefaultPose=False):
+def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
     model_data = parseModel(path, useDefaultPose)
 
     # save images
@@ -597,7 +597,8 @@ def importSDR(context, path, useDefaultPose=False):
                     obj.select_set(True)
                     parts.append(obj)
                 context.view_layer.objects.active = parts[0]
-                bpy.ops.object.join()
+                if joinMeshes:
+                    bpy.ops.object.join()
                 
                 arma.select_set(True)
                 context.view_layer.objects.active = arma

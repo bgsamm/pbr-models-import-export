@@ -20,6 +20,7 @@ import bpy
 from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
 from bpy_extras.io_utils import ExportHelper
+from bpy.props import StringProperty, BoolProperty
 
 from .importer import importer
 from .exporter import exporter
@@ -30,22 +31,31 @@ class ImportModel(Operator, ImportHelper):
     bl_label = "PBR Model (.sdr)"
     bl_options = {'REGISTER', 'UNDO'}
 
-    filter_glob: bpy.props.StringProperty(
+    filter_glob: StringProperty(
         default='*.sdr;*.mdr;*.odr',
         options={'HIDDEN'}
     )
 
-    use_default_pose: bpy.props.BoolProperty(
+    use_default_pose: BoolProperty(
         name='Import In Default Pose',
         description="Some models' bind poses are pretty funky at " + \
                     "the moment. Enable\nthis to import models in " + \
-                    "their default pose instead",
+                    "their default pose instead.",
+        default=False
+    )
+
+    join_meshes: BoolProperty(
+        name='Merge Objects',
+        description="Enable to merge objects into a single mesh " + \
+                    "when importing. Meshes from different skin nodes " + \
+                    "will remain separate.",
         default=False
     )
     
     def execute(self, context):
         importer.importSDR(context, self.filepath,
-                           useDefaultPose=self.use_default_pose)
+                           useDefaultPose=self.use_default_pose,
+                           joinMeshes=self.join_meshes)
         # set viewport shading to Material Preview in Layout view
         view = [space for area in bpy.data.screens['Layout'].areas
                 for space in area.spaces if space.type == 'VIEW_3D'][0]
