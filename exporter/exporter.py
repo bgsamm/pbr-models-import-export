@@ -279,6 +279,8 @@ def writeFCurves(file, address, bone):
                 elif fcurve.array_index == 2:
                     for kf in fcurve.keyframe_points:
                         kf.co.y *= -1
+                        kf.handle_left.y *= -1
+                        kf.handle_right.y *= -1
                     idx = 2
             else:
                 idx = fcurve.array_index + 1
@@ -296,6 +298,8 @@ def writeFCurves(file, address, bone):
                and fcurve.array_index == 2:
                 for kf in fcurve.keyframe_points:
                     kf.co.y *= -1
+                    kf.handle_left.y *= -1
+                    kf.handle_right.y *= -1
         if i < len(actions) - 1:
             file.write('uint', nextAddr, address, offset=0xc)
             address = nextAddr
@@ -338,17 +342,14 @@ def writeKeyframes(file, address, fcurve, scale):
     for i in range(numFrames):
         frameAddr = framesAddr + i * 0xc
         kf = fcurve.keyframe_points[i]
-        # Bezier is giving me issues atm so
-        # just make everything linear for now
-        file.write('ushort', 1, frameAddr, offset=0)
-##        if kf.interpolation == 'CONSTANT':
-##            file.write('ushort', 0, frameAddr, offset=0)
-##        elif kf.interpolation == 'LINEAR':
-##            file.write('ushort', 1, frameAddr, offset=0)
-##        elif kf.interpolation == 'BEZIER':
-##            file.write('ushort', 2, frameAddr, offset=0)
-##        else:
-##            raise ValueError(f"Unsupported interpolation type '{kf.interpolation}'")
+        if kf.interpolation == 'CONSTANT':
+            file.write('ushort', 0, frameAddr, offset=0)
+        elif kf.interpolation == 'LINEAR':
+            file.write('ushort', 1, frameAddr, offset=0)
+        elif kf.interpolation == 'BEZIER':
+            file.write('ushort', 2, frameAddr, offset=0)
+        else:
+            raise ValueError(f"Unsupported interpolation type '{kf.interpolation}'")
         file.write('ushort', i, frameAddr, offset=0x2)
         if kf.interpolation == 'BEZIER':
             file.write('ushort', nBezier * 2, frameAddr, offset=0x4)
