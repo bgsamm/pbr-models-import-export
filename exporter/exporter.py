@@ -190,6 +190,11 @@ def writeBone(file, address, bone):
     if not isSkin(bone.name) and bone.parent is not None:
         transform = bone.parent.matrix_local.inverted() @ bone.matrix_local
         t,r,s = transform.decompose()
+        # regular bones don't actually contain scale info in
+        # Blender from what I can tell, so just going to use
+        # the origin's posed scale for now
+        if bone.name == 'Origin':
+            s = arma.pose.bones['Origin'].scale
         r = r.to_euler()
         if any(f != 0.0 for f in [*t, *r]) or any(f != 1.0 for f in s):
             file.write('uint', 0x2, address)
@@ -542,7 +547,9 @@ def writeMesh(file, address, object):
     file.write('float', 0.0, 0, whence='current')
     file.write('float', 0.0, 0, whence='current')
     file.write('float', 1.0, 0, whence='current')
-    file.write('float', 50.0, 0, whence='current')
+    # this should not be hard-coded but I'm not sure how
+    # to determine the correct value dynamically
+    file.write('float', 8.0, 0, whence='current')
     file.write('float', 1.0, 0, whence='current')
 
     return file.tell()
