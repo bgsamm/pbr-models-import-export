@@ -37,10 +37,7 @@ def toRotationMatrix(x, y, z):
     return Euler((x, y, z), 'XYZ').to_matrix().to_4x4()
 
 def toScaleMatrix(x, y, z):
-    sX = Matrix.Scale(x, 4, (1, 0, 0))
-    sY = Matrix.Scale(y, 4, (0, 1, 0))
-    sZ = Matrix.Scale(z, 4, (0, 0, 1))
-    return sZ @ sY @ sX
+    return Matrix.Diagonal((x, y, z)).to_4x4()
 
 def flattenIndexedDict(d):
     return [data['object'] for addr,data in
@@ -308,7 +305,7 @@ def parseBones(file, address, bones, useDefaultPose=False):
         sca = Matrix.Identity(4)
     
     if k == 0x2:
-        # secondary rotation
+        # bind pose rotation
         rx = file.read('float', address, offset=0x34)
         ry = file.read('float', 0, whence='current')
         rz = file.read('float', 0, whence='current')
