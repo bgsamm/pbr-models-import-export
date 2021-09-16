@@ -24,6 +24,7 @@ mesh_dict = {}
 mat_dict = {}
 tex_dict = {}
 img_dict = {}
+anim_dict = {}
 
 def readString(file, address):
     s = ''
@@ -109,6 +110,68 @@ def parseTextureCoords(file, address, numEntries, stride):
         texcoords.append((x, y))
     return texcoords
 
+def parseActions(file, address, numActions):
+    for i in range(numActions):
+        actionAddr = address + i * 0x30
+        nameAddr = file.read('uint', actionAddr)
+        name = file.read('string', nameAddr)
+        anim_dict[i] = {'name': name,
+                        'bones': {}}
+
+def parseFCurves(file, address, boneName):
+    nextAddr = address
+    while nextAddr != 0:
+        actionIndex = file.read('ushort', nextAddr, offset=0)
+        numFCurves = file.read('ushort', nextAddr, offset=0x2)
+        fcurveListAddr = file.read('uint', nextAddr, offset=0x4)
+        anim_dict[actionIndex]['bones'][boneName] = []
+        for i in range(numFCurves):
+            fcurveAddr = fcurveListAddr + i * 0x10
+            axis = file.read('uchar', fcurveAddr, offset=0x2)
+            compIndex = file.read('uchar', fcurveAddr, offset=0x1)
+            if compIndex >= 3:
+                print(f'Unknown component type: {compIndex} ({boneName}, {hex(fcurveAddr)})')
+                continue
+            component = ['location', 'rotation_euler', 'scale'][compIndex]
+            exp = file.read('uchar', fcurveAddr, offset=0x7)
+            keyframeAddr = file.read('uint', fcurveAddr, offset=0x8)
+            keyframes = parseKeyframes(file, keyframeAddr, exp)
+            if len(keyframes) == 0:
+                continue
+            fcurve = {'axis': axis,
+                      'component': component,
+                      'keyframes': keyframes}
+            anim_dict[actionIndex]['bones'][boneName].append(fcurve)
+        nextAddr = file.read('uint', nextAddr, offset=0xc)
+
+def parseKeyframes(file, address, scale_exp):
+    valsAddr = file.read('uint', address, offset=0)
+    derivsAddr = file.read('uint', address, offset=0x4)
+    keyframesAddr = file.read('uint', address, offset=0x10)
+    numKeyframes = file.read('ushort', address, offset=0x14)
+    keyframes = []
+    for i in range(numKeyframes):
+        keyframeAddr = keyframesAddr + i * 0xc
+        interpIndex = file.read('ushort', keyframeAddr)
+        interpolation = ['constant', 'linear', 'hermite'][interpIndex]
+        valueIndex = file.read('ushort', keyframeAddr, offset=0x2)
+        value = file.read('short', valsAddr, offset=(2 * valueIndex))
+        if derivsAddr > 0:
+            derivLIndex = file.read('ushort', keyframeAddr, offset=0x4)
+            derivLeft = file.read('float', derivsAddr, offset=(4 * derivLIndex))
+            derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
+            derivRight = file.read('float', derivsAddr, offset=(4 * derivRIndex))
+        else:
+            derivLeft = 0.0
+            derivRight = 0.0
+        time = file.read('float', keyframeAddr, offset=0x8)
+        keyframe = {'value': value / (2 ** scale_exp),
+                    'derivativeL': derivLeft,
+                    'derivativeR': derivRight,
+                    'time': time}
+        keyframes.append(keyframe)
+    return keyframes
+
 def parseWeights(file, address):
     weights = []
     
@@ -151,7 +214,7 @@ def parseWeights(file, address):
         weights[vertNum][bone1] = w1
         if bone2 != 0xffff:
             weights[vertNum][bone2] = w2
-
+            
     return weights
 
 def parseFaces(file, address, numGroups, vertAttrs):
@@ -260,6 +323,11 @@ def parseMeshPart(file, address):
 def parseSkeleton(file, address, useDefaultPose=False):
     objNameAddr = file.read('uint', address, offset=0)
     name = file.read('string', objNameAddr)
+    # actions
+    actionsAddr = file.read('uint', address, offset=0xc)
+    numActions = file.read('ushort', address, offset=0x8)
+    parseActions(file, actionsAddr, numActions)
+    # bones
     numBones = file.read('ushort', address, offset=0x6)
     rootAddr = file.read('uint', address, offset=0x10)
     bones = [None] * numBones
@@ -328,6 +396,10 @@ def parseBones(file, address, bones, useDefaultPose=False):
     mat = Matrix(mat)
     bone = Bone(idx, name, (pos @ rot @ sca), mat)
     bones[idx] = bone
+
+    animDataAddr = file.read('uint', address, offset=0x20)
+    if animDataAddr != 0:
+        parseFCurves(file, animDataAddr, name)
     
     childAddr = file.read('uint', address, offset=0x24)
     if childAddr != 0:
@@ -351,11 +423,12 @@ def parseBones(file, address, bones, useDefaultPose=False):
             yield sibling
 
 def parseModel(path, useDefaultPose=False):
-    global mesh_dict, mat_dict, tex_dict, img_dict
+    global mesh_dict, mat_dict, tex_dict, img_dict, anim_dict
     mesh_dict = {}
     mat_dict = {}
     tex_dict = {}
     img_dict = {}
+    anim_dict = {}
 
     file = BinaryReader(path)
 
@@ -419,7 +492,8 @@ def parseModel(path, useDefaultPose=False):
         'meshes': flattenIndexedDict(mesh_dict),
         'materials': flattenIndexedDict(mat_dict),
         'textures': flattenIndexedDict(tex_dict),
-        'images': flattenIndexedDict(img_dict)
+        'images': flattenIndexedDict(img_dict),
+        'actions': anim_dict
     }
     return sdr
 
@@ -505,6 +579,18 @@ def makeMesh(meshData, partData, bones):
     m.normals_split_custom_set_from_vertices(meshData.vertNormals) 
     return m
 
+def makeAction(actionData):
+    action = bpy.data.actions.new(actionData['name'])
+    for boneName in actionData['bones']:
+        for fcurveData in actionData['bones'][boneName]:
+            component = fcurveData['component']
+            axis = fcurveData['axis'] - 1
+            datapath = f'pose.bones["{boneName}"].{component}'
+            fcurve = action.fcurves.new(datapath, index=axis)
+            for keyframe in fcurveData['keyframes']:
+                frame = keyframe['time'] * bpy.context.scene.render.fps
+                fcurve.keyframe_points.insert(frame, keyframe['value'])
+
 def makeObject(context, meshData, partData, material, bones):
     m = makeMesh(meshData, partData, bones)
     o = bpy.data.objects.new('mesh', m)
@@ -541,7 +627,6 @@ def makeArmature(context, skele):
     
     edit_bones = arma.data.edit_bones
     edit_bones.remove(edit_bones['Bone'])
-
     makeArmature_r(edit_bones, skele.bones, 0)
     bpy.ops.object.mode_set(mode='OBJECT')
     
@@ -581,7 +666,13 @@ def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
     meshes = model_data['meshes']
     for skele in skeletons:
         arma = makeArmature(context, skele)
+        arma.animation_data_create()
+        for bone in arma.pose.bones:
+            bone.rotation_mode = 'XYZ'
+        for action in anim_dict:
+            makeAction(anim_dict[action])
         arma.select_set(False)
+        # create meshes
         for bone in skele.bones:
             if bone.meshIndex != None:
                 mesh = meshes[bone.meshIndex]
