@@ -77,6 +77,7 @@ class ExportModel(Operator, ExportHelper):
     
     def execute(self, context):
         exporter.writeSDR(self.filepath, context)
+        self.report({'INFO'}, 'Export successful.')
         return {'FINISHED'}
 
 def menu_func_import(self, context):
