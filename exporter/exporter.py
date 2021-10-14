@@ -9,18 +9,27 @@ def isSkin(name):
     return any(name == child.name for child in arma.children
                if child.type == 'MESH')
 
-def isAnimated(bone):
-    return any(bone.name in actions[idx]['keyframes'] for idx in actions)
-##    return any(bone.name in actions[idx]['keyframes'] and
-##               len(actions[idx]['keyframes'][bone.name]) > 0
-##               for idx in actions)
+def isBoneAnimated(bone):
+    return any(bone.name in actions[idx]['bones'] for idx in actions)
+
+def isMaterialAnimated(mat):
+    return any(mat.name in actions[idx]['materials'] for idx in actions)
 
 def getVertexGroupBoneIndex(object, groupID):
     return [bone.name for bone in bones] \
            .index(object.vertex_groups[groupID].name)
 
 def getMatTexture(material):
-    return [n for n in material.node_tree.nodes if n.type == 'TEX_IMAGE'][0]
+    textures = [n for n in material.node_tree.nodes if n.type == 'TEX_IMAGE']
+    if len(textures) > 0:
+        return textures[0]
+    return None
+
+def getMatMapping(material):
+    maps = [n for n in material.node_tree.nodes if n.type == 'MAPPING']
+    if len(maps) > 0:
+        return maps[0]
+    return None
 
 def imageToRGB5A3(image):
     w,h = image.size
@@ -48,7 +57,6 @@ def imageToRGB5A3(image):
                               ((g >> 3) << 5) + \
                               (b >> 3)
                     data[idx:idx+2] = val.to_bytes(2, 'big')
-                    data += val.to_bytes(2, 'big')
                     idx += 2
     return bytes(data)
 
@@ -96,6 +104,9 @@ def writeTexture(file, address, texture):
     return file.tell() + 0x10 # next address (add some padding)
 
 def writeMaterial(file, address, material):
+    if isMaterialAnimated(material):
+        print(material.name, 'is animated')
+        print(actions[0]['materials'][material.name])
     nameAddr = address + 0x8c
     file.write('uint', nameAddr, address)
 
@@ -220,7 +231,7 @@ def writeBone(file, address, bone):
     sz = (sz // 4) * 4 + 4
     nextAddr = nameAddr + sz
 
-    if isAnimated(bone):
+    if isBoneAnimated(bone):
         file.write('uint', nextAddr, address, offset=0x20)
         poseBone = arma.pose.bones[bone.name]
         nextAddr = writeFCurves(file, nextAddr, poseBone)
@@ -239,7 +250,6 @@ def writeBone(file, address, bone):
 
     return nextAddr
 
-# TODO: filter out constant fcurves
 def writeFCurves(file, address, poseBone):
     for i in range(len(actions)):
         action = actions[i]['action']
@@ -249,7 +259,7 @@ def writeFCurves(file, address, poseBone):
         file.write('float', animLength, address, offset=0x8)
 
         numFCurves = 0
-        keyframes = actions[i]['keyframes'][poseBone.name]
+        keyframes = actions[i]['bones'][poseBone.name]
         for comp in keyframes:
             numFCurves += len(keyframes[comp])
         file.write('ushort', numFCurves, address, offset=0x2)
@@ -533,46 +543,6 @@ def writeSDR(path, cx):
     arma = context.object
     bones = arma.data.bones
 
-    # build keyframe dictionary
-    actions = {}
-    names = [bone.name for bone in bones]
-    for action in bpy.data.actions:
-        if any(fc.group is not None and fc.group.name
-               in names for fc in action.fcurves):
-            i = len(actions)
-            actions[i] = { 'action': action, 'keyframes': {} }
-            arma.animation_data.action = action
-            for frame in range(int(action.frame_range[1] + 1)):
-                context.scene.frame_set(frame)
-                for bone in arma.pose.bones[1:]: # root cannot be animated
-                    if bone.name not in actions[i]['keyframes']:
-                        actions[i]['keyframes'][bone.name] = {
-                            0: { 0: [], 1: [], 2: [] }, # t (x, y, z)
-                            1: { 0: [], 1: [], 2: [] }, # r (x, y, z)
-                            2: { 0: [], 1: [], 2: [] }, # s (x, y, z)
-                        }
-                    keyframes = actions[i]['keyframes'][bone.name]
-                    transform = bone.parent.matrix.inverted() \
-                                @ bone.matrix
-                    comps = list(transform.decompose())
-                    comps[1] = comps[1].to_euler()
-                    for m in range(3):
-                        for n in range(3):
-                            if len(keyframes[m][n]) == 0 or \
-                               not approxEqual(keyframes[m][n][-1][1],
-                                               comps[m][n]):
-                                keyframes[m][n].append((frame, comps[m][n]))
-            # filtering breaks the animation, not sure why yet
-##            # filter out constant f-curves
-##            for bone in arma.data.bones[1:]:
-##                keyframes = actions[i]['keyframes'][bone.name]
-##                for m in range(3):
-##                    keyframes[m] = { k:v for k,v in keyframes[m].items()
-##                                     if len(v) > 1 }
-##                keyframes = { k:v for k,v in keyframes.items()
-##                              if len(v) > 0 }
-##                actions[i]['keyframes'][bone.name] = keyframes
-
     meshes = [child for child in arma.children if child.type == 'MESH']
     materials = []
     for mesh in meshes:
@@ -583,6 +553,66 @@ def writeSDR(path, cx):
         tex = getMatTexture(mat)
         if tex.image.name not in textures:
             textures[tex.image.name] = tex
+
+    # build keyframe dictionary
+    actions = {}
+    names = [bone.name for bone in bones]
+    names += [mat.name for mat in materials]
+    for action in bpy.data.actions:
+        if any(fc.group is not None and fc.group.name
+               in names for fc in action.fcurves):
+            i = len(actions)
+            actions[i] = { 'action': action, 'bones': {}, 'materials': {} }
+            if action.id_root == 'OBJECT':
+                arma.animation_data.action = action
+            for frame in range(int(action.frame_range[1] + 1)):
+                context.scene.frame_set(frame)
+                # root cannot be animated
+                for bone in arma.pose.bones[1:]:
+                    if bone.name not in actions[i]['bones']:
+                        actions[i]['bones'][bone.name] = {
+                            0: { 0: [], 1: [], 2: [] }, # t (x, y, z)
+                            1: { 0: [], 1: [], 2: [] }, # r (x, y, z)
+                            2: { 0: [], 1: [], 2: [] }, # s (x, y, z)
+                        }
+                    keyframes = actions[i]['bones'][bone.name]
+                    transform = bone.parent.matrix.inverted() \
+                                @ bone.matrix
+                    comps = list(transform.decompose())
+                    comps[1] = comps[1].to_euler()
+                    for m in range(3): # t, r, s
+                        for n in range(3): # x, y, z
+                            if len(keyframes[m][n]) == 0 or \
+                               not approxEqual(keyframes[m][n][-1][1],
+                                               comps[m][n]):
+                                keyframes[m][n].append((frame, comps[m][n]))
+                # TODO: add loop over materials
+                for mat in materials:
+                    mapNode = getMatMapping(mat)
+                    if not mapNode:
+                        continue
+                    if mat.name not in actions[i]['materials']:
+                        actions[i]['materials'][mat.name] = {
+                            0: [], # tx
+                            1: []  # ty
+                        }
+                    keyframes = actions[i]['materials'][mat.name]
+                    for n in range(2): # x, y
+                        val = mapNode.inputs[1].default_value[n]
+                        if len(keyframes[n]) == 0 or \
+                           not approxEqual(keyframes[n][-1][1], val):
+                            keyframes[n].append((frame, val))
+                    
+            # Filtering breaks the animation, not sure why yet.
+##            # filter out constant f-curves
+##            for bone in arma.data.bones[1:]:
+##                keyframes = actions[i]['bones'][bone.name]
+##                for m in range(3):
+##                    keyframes[m] = { k:v for k,v in keyframes[m].items()
+##                                     if len(v) > 1 }
+##                keyframes = { k:v for k,v in keyframes.items()
+##                              if len(v) > 0 }
+##                actions[i]['bones'][bone.name] = keyframes
 
     print('Initialization:', time.time() - t0)
     t0 = time.time()
