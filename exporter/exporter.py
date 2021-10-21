@@ -88,11 +88,13 @@ def writeTexture(file, address, texture):
         file.write('uint', 1, address, offset=0x14) # y
     else:
         raise Exception(f"Extrapolation type '{texture.extension}' unsupported")
-    file.write('uint', 0x80, address, offset=0x28) # image offset
+    # image data address needs to be a multiple of 0x20
+    offset = 0x80 + address % 0x20
+    file.write('uint', offset, address, offset=0x28) # image offset
     #data = imageToRGBA32(image) # currently doesn't load correctly in-game
     data = imageToRGB5A3(image)
     file.write('uint', len(data), address, offset=0x4c)
-    file.write_chunk(data, address + 0x80)
+    file.write_chunk(data, address + offset)
     return file.tell() + 0x10 # next address (add some padding)
 
 def writeMaterial(file, address, material):
@@ -101,8 +103,8 @@ def writeMaterial(file, address, material):
 
     # name
     file.write('string', material.name, nameAddr)
-    sz = len(material.name)
-    sz = (sz // 4) * 4 + 4
+    sz = len(material.name) + 1 # null terminate
+    sz = (sz + 3) // 4 * 4
     nextAddr = nameAddr + sz
 
     texture = getMatTexture(material)
@@ -157,6 +159,14 @@ def writeMaterial(file, address, material):
 
 def writeAction(file, address, action):
     time = action.frame_range.y / FRAME_RATE
+    # determines portion of animation played during attacks
+    if action.name == 'move_spec':
+        # 1.5 is fairly arbitrary, length of Psychic's animation
+        file.write('float', time - 1.5, address, offset=0x4)
+    # determines position of mon when animation is played
+    if action.name == 'move_phys':
+        # 1.0 is entirely arbitrary
+        file.write('float', 1.0, address, offset=0x8)
     file.write('float', time, address, offset=0xc)
     file.write('uchar', 1, address, offset=0x28) # loops?
     file.write('uchar', 1, address, offset=0x29)
@@ -209,6 +219,9 @@ def writeBone(file, address, bone):
             file.write('float', s[1], 0, whence='current')
             file.write('float', s[2], 0, whence='current')
             nextAddr += 12
+        if bone.name == 'ct_all':
+            # this affects camera positioning; should not be hard-coded
+            file.write('float', 8, address, offset=0x1c)
 
     nameAddr = nextAddr
     file.write('uint', nameAddr, address, offset=0x4)
@@ -216,8 +229,8 @@ def writeBone(file, address, bone):
     file.write('ushort', idx, address, offset=0x8)
     file.write('ushort', 0x18, address, offset=0xa)
     file.write('string', bone.name, nameAddr)
-    sz = len(bone.name)
-    sz = (sz // 4) * 4 + 4
+    sz = len(bone.name) + 1 # null terminate
+    sz = (sz + 3) // 4 * 4
     nextAddr = nameAddr + sz
 
     if isAnimated(bone):
@@ -286,7 +299,7 @@ def writeKeyframes(file, address, keyframes, scale):
     numFrames = len(keyframes)
     pointsAddr = address + 0x20
     # each point uses 2 bytes so need to do some alignment
-    framesAddr = pointsAddr + (numFrames // 2) * 4 + 4
+    framesAddr = pointsAddr + (numFrames * 2 + 3) // 4 * 4
     file.write('uint', pointsAddr, address, offset=0)
     file.write('ushort', numFrames, address, offset=0x8)
     file.write('float', maxTime, address, offset=0xc)
@@ -438,10 +451,12 @@ def writeMesh(file, address, object):
 
         file.write('ushort', 0x1, facesAddr, offset=0xc) # num. ops
         faceOpsAddr = facesAddr + 0x40
-        faceOpsAddr = (faceOpsAddr // 0x20) * 0x20
+        # the start address needs to be a multiple of 0x20
+        faceOpsAddr = (faceOpsAddr + 0x1f) // 0x20 * 0x20
         file.write('uint', faceOpsAddr, facesAddr, offset=0x14)
         faceOpsSize = 0x3 + len(faces) * 3 * 6
-        faceOpsSize = (faceOpsSize // 0x10) * 0x10 + 0x10
+        # the region size also needs to be a multiple of 0x20
+        faceOpsSize = (faceOpsSize + 0x1f) // 0x20 * 0x20
         file.write('uint', faceOpsSize, facesAddr, offset=0x18)
         vertInfoAddr = faceOpsAddr + faceOpsSize
         file.write('uint', vertInfoAddr, facesAddr, offset=0x10)
@@ -503,8 +518,8 @@ def writeMesh(file, address, object):
     file.write('float', 0.0, 0, whence='current')
     file.write('float', 0.0, 0, whence='current')
     file.write('float', 1.0, 0, whence='current')
-    # this should not be hard-coded but I'm not sure how
-    # to determine the correct value dynamically
+    # this should probably not be hard-coded but I'm not sure
+    # how to determine the correct value dynamically
     file.write('float', 8.0, 0, whence='current')
     file.write('float', 1.0, 0, whence='current')
 
@@ -596,7 +611,7 @@ def writeSDR(path, cx):
     fout.write('uint', texListAddr, 0xc)
     fout.write('ushort', len(textures), 0x1a)
     nextAddr = texListAddr + 4 * len(textures)
-    nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
+    nextAddr = (nextAddr + 0xf) // 0x10 * 0x10
     i = 0
     for tex in textures.values():
         textures[tex.image.name]['address'] = nextAddr
@@ -611,7 +626,7 @@ def writeSDR(path, cx):
     fout.write('uint', matListAddr, 0x14)
     fout.write('ushort', len(materials), 0x1e)
     nextAddr = matListAddr + 4 * len(materials)
-    nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
+    nextAddr = (nextAddr + 0xf) // 0x10 * 0x10
     for i in range(len(materials)):
         fout.write('uint', nextAddr, matListAddr, offset=(4 * i))
         nextAddr = writeMaterial(fout, nextAddr, materials[i])
@@ -627,8 +642,8 @@ def writeSDR(path, cx):
         actionAddr = actionListAddr + idx * 0x30
         fout.write('uint', nextAddr, actionAddr)
         fout.write('string', action.name, nextAddr)
-        sz = len(action.name)
-        sz = (sz // 4) * 4 + 4
+        sz = len(action.name) + 1 # null terminate
+        sz = (sz + 3) // 4 * 4
         nextAddr += sz
     print('Actions:', time.time() - t0)
     t0 = time.time()
@@ -645,8 +660,8 @@ def writeSDR(path, cx):
     fout.write('ushort', len(actions), skeleAddr, offset=0x8)
     fout.write('uint', actionListAddr, skeleAddr, offset=0xc)
     fout.write('string', arma.name, skeleNameAddr)
-    sz = len(arma.name)
-    sz = (sz // 4) * 4 + 4
+    sz = len(arma.name) + 1
+    sz = (sz + 3) // 4 * 4
     rootAddr = skeleNameAddr + sz
     fout.write('uint', rootAddr, skeleAddr, offset=0x10) # root bone pointer
     nextAddr = writeBone(fout, rootAddr, bones[0]) # write bone tree
