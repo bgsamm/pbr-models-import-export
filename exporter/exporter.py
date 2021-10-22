@@ -90,7 +90,7 @@ def writeTexture(file, address, texture):
         raise Exception(f"Extrapolation type '{texture.extension}' unsupported")
     # image data address needs to be a multiple of 0x20
     offset = 0x80 + address % 0x20
-    file.write('uint', offset, address, offset=0x28) # image offset
+    file.write('uint', offset, address, offset=0x28)
     #data = imageToRGBA32(image) # currently doesn't load correctly in-game
     data = imageToRGB5A3(image)
     file.write('uint', len(data), address, offset=0x4c)
@@ -157,14 +157,15 @@ def writeMaterial(file, address, material):
 
     return file.tell() + 1
 
-def writeAction(file, address, action):
+def writeAction(file, address, action_id):
+    action = actions[action_id]['action']
     time = action.frame_range.y / FRAME_RATE
     # determines portion of animation played during attacks
-    if action.name == 'move_spec':
+    if action_id == 'move_spec':
         # 1.5 is fairly arbitrary, length of Psychic's animation
         file.write('float', time - 1.5, address, offset=0x4)
     # determines position of mon when animation is played
-    if action.name == 'move_phys':
+    if action_id == 'move_phys':
         # 1.0 is entirely arbitrary
         file.write('float', 1.0, address, offset=0x8)
     file.write('float', time, address, offset=0xc)
@@ -254,15 +255,16 @@ def writeBone(file, address, bone):
 
 # TODO: filter out constant fcurves
 def writeFCurves(file, address, poseBone):
-    for i in range(len(actions)):
-        action = actions[i]['action']
+    i = 0
+    for action_id in actions:
+        action = actions[action_id]['action']
         file.write('ushort', i, address, offset=0)
         # anim. length can't be 0 or it will freeze the game
         animLength = action.frame_range[1] / FRAME_RATE
         file.write('float', animLength, address, offset=0x8)
 
         numFCurves = 0
-        keyframes = actions[i]['keyframes'][poseBone.name]
+        keyframes = actions[action_id]['keyframes'][poseBone.name]
         for comp in keyframes:
             numFCurves += len(keyframes[comp])
         file.write('ushort', numFCurves, address, offset=0x2)
@@ -292,6 +294,7 @@ def writeFCurves(file, address, poseBone):
         if i < len(actions) - 1:
             file.write('uint', nextAddr, address, offset=0xc)
         address = nextAddr
+        i += 1
     return nextAddr
 
 def writeKeyframes(file, address, keyframes, scale):
@@ -445,6 +448,7 @@ def writeMesh(file, address, object):
         file.write('uint', 0x1, facesAddr)
         faces = [face for face in mesh.polygons if face.material_index == i]
         mat = object.material_slots[i].material
+        matListAddr = file.read('uint', 0, offset=0x14)
         matAddr = file.read('uint', matListAddr,
                             offset=(4 * materials.index(mat)))
         file.write('uint', matAddr, facesAddr, offset=0x8)
@@ -519,7 +523,7 @@ def writeMesh(file, address, object):
     file.write('float', 0.0, 0, whence='current')
     file.write('float', 1.0, 0, whence='current')
     # this should probably not be hard-coded but I'm not sure
-    # how to determine the correct value dynamically
+    # how to determine the correct value dynamically yet
     file.write('float', 8.0, 0, whence='current')
     file.write('float', 1.0, 0, whence='current')
 
@@ -540,8 +544,6 @@ def writeSDR(path, cx):
     global textures
     global keyframes
 
-    global matListAddr
-
     context = cx
     FRAME_RATE = cx.scene.render.fps
 
@@ -551,33 +553,35 @@ def writeSDR(path, cx):
     # build keyframe dictionary
     actions = {}
     names = [bone.name for bone in bones]
-    for action in bpy.data.actions:
-        if any(fc.group is not None and fc.group.name
-               in names for fc in action.fcurves):
-            i = len(actions)
-            actions[i] = { 'action': action, 'keyframes': {} }
-            arma.animation_data.action = action
-            for frame in range(int(action.frame_range[1] + 1)):
-                context.scene.frame_set(frame)
-                for bone in arma.pose.bones[1:]: # root cannot be animated
-                    if bone.name not in actions[i]['keyframes']:
-                        actions[i]['keyframes'][bone.name] = {
-                            0: { 0: [], 1: [], 2: [] }, # t (x, y, z)
-                            1: { 0: [], 1: [], 2: [] }, # r (x, y, z)
-                            2: { 0: [], 1: [], 2: [] }, # s (x, y, z)
-                        }
-                    keyframes = actions[i]['keyframes'][bone.name]
-                    transform = bone.parent.matrix.inverted() \
-                                @ bone.matrix
-                    comps = list(transform.decompose())
-                    comps[1] = comps[1].to_euler()
-                    for m in range(3):
-                        for n in range(3):
-                            if len(keyframes[m][n]) == 0 or \
-                               not approxEqual(keyframes[m][n][-1][1],
-                                               comps[m][n]):
-                                keyframes[m][n].append((frame, comps[m][n]))
-            # filtering breaks the animation, not sure why yet
+    action_ids = ['idle', 'run', 'damage', 'faint', 'move_phys', 'move_spec',
+                  'blink', 'sleep', 'wakeup']
+    for action_id in action_ids:
+        action = getattr(arma.data, f'prop_{action_id}')
+        if action is None:
+            continue
+        actions[action_id] = { 'action': action, 'keyframes': {} }
+        arma.animation_data.action = action
+        for frame in range(int(action.frame_range[1] + 1)):
+            context.scene.frame_set(frame)
+            for bone in arma.pose.bones[1:]: # root cannot be animated
+                if bone.name not in actions[action_id]['keyframes']:
+                    actions[action_id]['keyframes'][bone.name] = {
+                        0: { 0: [], 1: [], 2: [] }, # t (x, y, z)
+                        1: { 0: [], 1: [], 2: [] }, # r (x, y, z)
+                        2: { 0: [], 1: [], 2: [] }, # s (x, y, z)
+                    }
+                keyframes = actions[action_id]['keyframes'][bone.name]
+                transform = bone.parent.matrix.inverted() \
+                            @ bone.matrix
+                comps = list(transform.decompose())
+                comps[1] = comps[1].to_euler()
+                for m in range(3):
+                    for n in range(3):
+                        if len(keyframes[m][n]) == 0 or \
+                           not approxEqual(keyframes[m][n][-1][1],
+                                           comps[m][n]):
+                            keyframes[m][n].append((frame, comps[m][n]))
+        # filtering breaks the animation, not sure why yet
 ##            # filter out constant f-curves
 ##            for bone in arma.data.bones[1:]:
 ##                keyframes = actions[i]['keyframes'][bone.name]
@@ -635,16 +639,18 @@ def writeSDR(path, cx):
 
     # actions
     actionListAddr = nextAddr
-    for idx in actions:
-        nextAddr = writeAction(fout, nextAddr, actions[idx]['action'])
-    for idx in actions:
-        action = actions[idx]['action']
-        actionAddr = actionListAddr + idx * 0x30
+    for action_id in actions:
+        nextAddr = writeAction(fout, nextAddr, action_id)
+    i = 0
+    for action_id in actions:
+        action = actions[action_id]['action']
+        actionAddr = actionListAddr + i * 0x30
         fout.write('uint', nextAddr, actionAddr)
-        fout.write('string', action.name, nextAddr)
-        sz = len(action.name) + 1 # null terminate
+        fout.write('string', action_id, nextAddr)
+        sz = len(action_id) + 1 # null terminate
         sz = (sz + 3) // 4 * 4
         nextAddr += sz
+        i += 1
     print('Actions:', time.time() - t0)
     t0 = time.time()
 
