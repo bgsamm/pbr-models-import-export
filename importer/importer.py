@@ -3,8 +3,8 @@ from mathutils import Euler, Matrix, Vector
 
 import bpy, bmesh
 
-from ..shared import gtx
-from ..shared.classes import *
+from . import gtx
+from .classes import *
 from ..shared.const import *
 from ..shared.file_io import BinaryReader
 

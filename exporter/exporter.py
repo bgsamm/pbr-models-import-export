@@ -10,10 +10,12 @@ def isSkin(name):
                if child.type == 'MESH')
 
 def isBoneAnimated(bone):
-    return any(bone.name in actions[idx]['bones'] for idx in actions)
+    return any(bone.name in actions[action_id]['bones']
+               for action_id in actions)
 
 def isMaterialAnimated(mat):
-    return any(mat.name in actions[idx]['materials'] for idx in actions)
+    return any(mat.name in actions[action_id]['materials']
+               for action_id in actions)
 
 def getVertexGroupBoneIndex(object, groupID):
     return [bone.name for bone in bones] \
@@ -25,7 +27,7 @@ def getMatTexture(material):
         return textures[0]
     return None
 
-def getMatMapping(material):
+def getMatMapNode(material):
     maps = [n for n in material.node_tree.nodes if n.type == 'MAPPING']
     if len(maps) > 0:
         return maps[0]
@@ -96,24 +98,22 @@ def writeTexture(file, address, texture):
         file.write('uint', 1, address, offset=0x14) # y
     else:
         raise Exception(f"Extrapolation type '{texture.extension}' unsupported")
-    file.write('uint', 0x80, address, offset=0x28) # image offset
+    # image data address needs to be a multiple of 0x20
+    offset = 0x80 + address % 0x20
+    file.write('uint', offset, address, offset=0x28)
     #data = imageToRGBA32(image) # currently doesn't load correctly in-game
     data = imageToRGB5A3(image)
     file.write('uint', len(data), address, offset=0x4c)
-    file.write_chunk(data, address + 0x80)
+    file.write_chunk(data, address + offset)
     return file.tell() + 0x10 # next address (add some padding)
 
 def writeMaterial(file, address, material):
-    if isMaterialAnimated(material):
-        print(material.name, 'is animated')
-        print(actions[0]['materials'][material.name])
+    # name
     nameAddr = address + 0x8c
     file.write('uint', nameAddr, address)
-
-    # name
     file.write('string', material.name, nameAddr)
-    sz = len(material.name)
-    sz = (sz // 4) * 4 + 4
+    sz = len(material.name) + 1 # null terminate
+    sz = (sz + 3) // 4 * 4
     nextAddr = nameAddr + sz
 
     texture = getMatTexture(material)
@@ -164,13 +164,28 @@ def writeMaterial(file, address, material):
     file.write('uchar', 0x0, 0, whence='current')
     file.write('uchar', 0x0, 0, whence='current')
 
-    return file.tell() + 1
+    # animation data
+    nextAddr = file.tell() + 1
+    if isMaterialAnimated(material):
+        file.write('uint', nextAddr, address, offset=0x84)
+        nextAddr = writeFCurves(file, nextAddr, material)
 
-def writeAction(file, address, action):
-    time = action.frame_range.y / FRAME_RATE
+    return nextAddr
+
+def writeAction(file, address, action_id):
+    time = actions[action_id]['length'] / FRAME_RATE
+    # determines portion of animation played during attacks
+    if action_id == 'move_spec':
+        # 1.5 is fairly arbitrary, length of Psychic's animation
+        file.write('float', time - 1.5, address, offset=0x4)
+    # determines position of mon when animation is played
+    if action_id == 'move_phys':
+        # 1.0 is entirely arbitrary
+        file.write('float', 1.0, address, offset=0x8)
     file.write('float', time, address, offset=0xc)
     file.write('uchar', 1, address, offset=0x28) # loops?
-    file.write('uchar', 1, address, offset=0x29)
+    if not action_id.startswith('tx_'):
+        file.write('uchar', 1, address, offset=0x29)
     file.write('uchar', 1, address, offset=0x2a)
     return address + 0x30
 
@@ -220,6 +235,9 @@ def writeBone(file, address, bone):
             file.write('float', s[1], 0, whence='current')
             file.write('float', s[2], 0, whence='current')
             nextAddr += 12
+        if bone.name == 'ct_all':
+            # this affects camera positioning; should not be hard-coded
+            file.write('float', 8, address, offset=0x1c)
 
     nameAddr = nextAddr
     file.write('uint', nameAddr, address, offset=0x4)
@@ -227,14 +245,13 @@ def writeBone(file, address, bone):
     file.write('ushort', idx, address, offset=0x8)
     file.write('ushort', 0x18, address, offset=0xa)
     file.write('string', bone.name, nameAddr)
-    sz = len(bone.name)
-    sz = (sz // 4) * 4 + 4
+    sz = len(bone.name) + 1 # null terminate
+    sz = (sz + 3) // 4 * 4
     nextAddr = nameAddr + sz
 
     if isBoneAnimated(bone):
         file.write('uint', nextAddr, address, offset=0x20)
-        poseBone = arma.pose.bones[bone.name]
-        nextAddr = writeFCurves(file, nextAddr, poseBone)
+        nextAddr = writeFCurves(file, nextAddr, bone)
 
     if len(bone.children) > 0:
         file.write('uint', nextAddr, address, offset=0x24)
@@ -250,16 +267,32 @@ def writeBone(file, address, bone):
 
     return nextAddr
 
-def writeFCurves(file, address, poseBone):
-    for i in range(len(actions)):
-        action = actions[i]['action']
+def writeFCurves(file, address, object):
+    i = 0
+    for action_id in actions:
         file.write('ushort', i, address, offset=0)
         # anim. length can't be 0 or it will freeze the game
-        animLength = action.frame_range[1] / FRAME_RATE
+        animLength = actions[action_id]['length'] / FRAME_RATE
         file.write('float', animLength, address, offset=0x8)
 
         numFCurves = 0
-        keyframes = actions[i]['bones'][poseBone.name]
+        if type(object) == bpy.types.Bone:
+            if object.name in actions[action_id]['bones']:
+                keyframes = actions[action_id]['bones'][object.name]
+            else:
+                keyframes = {
+                    0: { 0: [(0, 0)], 1: [(0, 0)], 2: [(0, 0)] }, # t (x, y, z)
+                    1: { 0: [(0, 0)], 1: [(0, 0)], 2: [(0, 0)] }, # r (x, y, z)
+                    2: { 0: [(0, 1)], 1: [(0, 1)], 2: [(0, 1)] }, # s (x, y, z)
+                }
+        elif type(object) == bpy.types.Material:
+            if object.name in actions[action_id]['materials']:
+                keyframes = actions[action_id]['materials'][object.name]
+            else:
+                keyframes = {
+                    0x14: { 0: [(0, 0)], 1: [(0, 0)] }, # t (x, y)
+                    0x16: { 0: [(0, 1)], 1: [(0, 1)] }, # s (x, y)
+                }
         for comp in keyframes:
             numFCurves += len(keyframes[comp])
         file.write('ushort', numFCurves, address, offset=0x2)
@@ -267,9 +300,10 @@ def writeFCurves(file, address, poseBone):
         file.write('uint', fcurveListAddr, address, offset=0x4)
 
         nextAddr = fcurveListAddr + numFCurves * 0x10
+        c = 0
         for m in keyframes: # component
             for n in keyframes[m]: # axis
-                entryAddr = fcurveListAddr + (m * 3 + n) * 0x10
+                entryAddr = fcurveListAddr + c * 0x10
                 file.write('uchar', m, entryAddr, offset=0x1)
                 file.write('uchar', n+1, entryAddr, offset=0x2)
                 file.write('uchar', 0x8, entryAddr, offset=0x6) # format code?
@@ -285,10 +319,12 @@ def writeFCurves(file, address, poseBone):
                 file.write('uint', nextAddr, entryAddr, offset=0x8)
                 nextAddr = writeKeyframes(file, nextAddr,
                                           keyframes[m][n], 2 ** exp)
+                c += 1
         # actions are stored in a linked list
         if i < len(actions) - 1:
             file.write('uint', nextAddr, address, offset=0xc)
         address = nextAddr
+        i += 1
     return nextAddr
 
 def writeKeyframes(file, address, keyframes, scale):
@@ -296,7 +332,7 @@ def writeKeyframes(file, address, keyframes, scale):
     numFrames = len(keyframes)
     pointsAddr = address + 0x20
     # each point uses 2 bytes so need to do some alignment
-    framesAddr = pointsAddr + (numFrames // 2) * 4 + 4
+    framesAddr = pointsAddr + (numFrames * 2 + 3) // 4 * 4
     file.write('uint', pointsAddr, address, offset=0)
     file.write('ushort', numFrames, address, offset=0x8)
     file.write('float', maxTime, address, offset=0xc)
@@ -442,16 +478,19 @@ def writeMesh(file, address, object):
         file.write('uint', 0x1, facesAddr)
         faces = [face for face in mesh.polygons if face.material_index == i]
         mat = object.material_slots[i].material
+        matListAddr = file.read('uint', 0, offset=0x14)
         matAddr = file.read('uint', matListAddr,
                             offset=(4 * materials.index(mat)))
         file.write('uint', matAddr, facesAddr, offset=0x8)
 
         file.write('ushort', 0x1, facesAddr, offset=0xc) # num. ops
         faceOpsAddr = facesAddr + 0x40
-        faceOpsAddr = (faceOpsAddr // 0x20) * 0x20
+        # the start address needs to be a multiple of 0x20
+        faceOpsAddr = (faceOpsAddr + 0x1f) // 0x20 * 0x20
         file.write('uint', faceOpsAddr, facesAddr, offset=0x14)
         faceOpsSize = 0x3 + len(faces) * 3 * 6
-        faceOpsSize = (faceOpsSize // 0x10) * 0x10 + 0x10
+        # the region size also needs to be a multiple of 0x20
+        faceOpsSize = (faceOpsSize + 0x1f) // 0x20 * 0x20
         file.write('uint', faceOpsSize, facesAddr, offset=0x18)
         vertInfoAddr = faceOpsAddr + faceOpsSize
         file.write('uint', vertInfoAddr, facesAddr, offset=0x10)
@@ -513,8 +552,8 @@ def writeMesh(file, address, object):
     file.write('float', 0.0, 0, whence='current')
     file.write('float', 0.0, 0, whence='current')
     file.write('float', 1.0, 0, whence='current')
-    # this should not be hard-coded but I'm not sure how
-    # to determine the correct value dynamically
+    # this should probably not be hard-coded but I'm not sure
+    # how to determine the correct value dynamically yet
     file.write('float', 8.0, 0, whence='current')
     file.write('float', 1.0, 0, whence='current')
 
@@ -535,8 +574,6 @@ def writeSDR(path, cx):
     global textures
     global keyframes
 
-    global matListAddr
-
     context = cx
     FRAME_RATE = cx.scene.render.fps
 
@@ -556,54 +593,67 @@ def writeSDR(path, cx):
 
     # build keyframe dictionary
     actions = {}
-    names = [bone.name for bone in bones]
-    names += [mat.name for mat in materials]
-    for action in bpy.data.actions:
-        if any(fc.group is not None and fc.group.name
-               in names for fc in action.fcurves):
-            i = len(actions)
-            actions[i] = { 'action': action, 'bones': {}, 'materials': {} }
-            if action.id_root == 'OBJECT':
-                arma.animation_data.action = action
+    # material animations MUST start with "tx_"
+    action_ids = ['idle', 'run', 'damage', 'faint', 'move_phys', 'move_spec',
+                  'tx_wink', 'tx_sleep', 'tx_wakeup']
+    for action_id in action_ids:
+        actions[action_id] = { 'length': 0, 'bones': {}, 'materials': {} }
+        action = getattr(arma.data, f'prop_{action_id}')
+        if action:
+            arma.animation_data.action = action
+            actions[action_id]['length'] = action.frame_range.y
             for frame in range(int(action.frame_range[1] + 1)):
                 context.scene.frame_set(frame)
-                # root cannot be animated
+                # root bone cannot be animated
                 for bone in arma.pose.bones[1:]:
-                    if bone.name not in actions[i]['bones']:
-                        actions[i]['bones'][bone.name] = {
+                    if bone.name not in actions[action_id]['bones']:
+                        actions[action_id]['bones'][bone.name] = {
                             0: { 0: [], 1: [], 2: [] }, # t (x, y, z)
                             1: { 0: [], 1: [], 2: [] }, # r (x, y, z)
                             2: { 0: [], 1: [], 2: [] }, # s (x, y, z)
                         }
-                    keyframes = actions[i]['bones'][bone.name]
+                    keyframes = actions[action_id]['bones'][bone.name]
                     transform = bone.parent.matrix.inverted() \
                                 @ bone.matrix
                     comps = list(transform.decompose())
                     comps[1] = comps[1].to_euler()
-                    for m in range(3): # t, r, s
-                        for n in range(3): # x, y, z
+                    for m in range(3):
+                        for n in range(3):
                             if len(keyframes[m][n]) == 0 or \
                                not approxEqual(keyframes[m][n][-1][1],
                                                comps[m][n]):
                                 keyframes[m][n].append((frame, comps[m][n]))
-                # TODO: add loop over materials
-                for mat in materials:
-                    mapNode = getMatMapping(mat)
-                    if not mapNode:
-                        continue
-                    if mat.name not in actions[i]['materials']:
-                        actions[i]['materials'][mat.name] = {
-                            0: [], # tx
-                            1: []  # ty
-                        }
-                    keyframes = actions[i]['materials'][mat.name]
+        # loop over materials
+        for mat in materials:
+            action = getattr(mat, f'prop_{action_id}')
+            if action:
+                actions[action_id]['length'] = max(action.frame_range.y,
+                                                   actions[action_id]['length'])
+                if not mat.node_tree.animation_data:
+                    mat.node_tree.animation_data_create()
+                mat.node_tree.animation_data.action = action
+                if mat.name not in actions[action_id]['materials']:
+                    actions[action_id]['materials'][mat.name] = {
+                        0x14: { 0: [], 1: [] }, # t (x, y)
+                        0x16: { 0: [], 1: [] }, # s (x, y)
+                    }
+                keyframes = actions[action_id]['materials'][mat.name]
+                mapNode = getMatMapNode(mat)
+                for frame in range(int(action.frame_range[1] + 1)):
+                    context.scene.frame_set(frame)
                     for n in range(2): # x, y
-                        val = mapNode.inputs[1].default_value[n]
-                        if len(keyframes[n]) == 0 or \
-                           not approxEqual(keyframes[n][-1][1], val):
-                            keyframes[n].append((frame, val))
-                    
-            # Filtering breaks the animation, not sure why yet.
+                        t = mapNode.inputs[1].default_value[n]
+                        # Blender goes bottom-to-top, game goes top-to-bottom
+                        if n == 1:
+                            t = 1.0 - t
+                        if len(keyframes[0x14][n]) == 0 or \
+                           not approxEqual(keyframes[0x14][n][-1][1], t):
+                            keyframes[0x14][n].append((frame, t))
+                        s = mapNode.inputs[3].default_value[n]
+                        if len(keyframes[0x16][n]) == 0 or \
+                           not approxEqual(keyframes[0x16][n][-1][1], s):
+                            keyframes[0x16][n].append((frame, s))
+        # filtering breaks the animation, not sure why yet
 ##            # filter out constant f-curves
 ##            for bone in arma.data.bones[1:]:
 ##                keyframes = actions[i]['bones'][bone.name]
@@ -626,7 +676,7 @@ def writeSDR(path, cx):
     fout.write('uint', texListAddr, 0xc)
     fout.write('ushort', len(textures), 0x1a)
     nextAddr = texListAddr + 4 * len(textures)
-    nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
+    nextAddr = (nextAddr + 0xf) // 0x10 * 0x10
     i = 0
     for tex in textures.values():
         textures[tex.image.name]['address'] = nextAddr
@@ -641,7 +691,7 @@ def writeSDR(path, cx):
     fout.write('uint', matListAddr, 0x14)
     fout.write('ushort', len(materials), 0x1e)
     nextAddr = matListAddr + 4 * len(materials)
-    nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
+    nextAddr = (nextAddr + 0xf) // 0x10 * 0x10
     for i in range(len(materials)):
         fout.write('uint', nextAddr, matListAddr, offset=(4 * i))
         nextAddr = writeMaterial(fout, nextAddr, materials[i])
@@ -650,16 +700,17 @@ def writeSDR(path, cx):
 
     # actions
     actionListAddr = nextAddr
-    for idx in actions:
-        nextAddr = writeAction(fout, nextAddr, actions[idx]['action'])
-    for idx in actions:
-        action = actions[idx]['action']
-        actionAddr = actionListAddr + idx * 0x30
+    for action_id in actions:
+        nextAddr = writeAction(fout, nextAddr, action_id)
+    i = 0
+    for action_id in actions:
+        actionAddr = actionListAddr + i * 0x30
         fout.write('uint', nextAddr, actionAddr)
-        fout.write('string', action.name, nextAddr)
-        sz = len(action.name)
-        sz = (sz // 4) * 4 + 4
+        fout.write('string', action_id, nextAddr)
+        sz = len(action_id) + 1 # null terminate
+        sz = (sz + 3) // 4 * 4
         nextAddr += sz
+        i += 1
     print('Actions:', time.time() - t0)
     t0 = time.time()
 
@@ -675,8 +726,8 @@ def writeSDR(path, cx):
     fout.write('ushort', len(actions), skeleAddr, offset=0x8)
     fout.write('uint', actionListAddr, skeleAddr, offset=0xc)
     fout.write('string', arma.name, skeleNameAddr)
-    sz = len(arma.name)
-    sz = (sz // 4) * 4 + 4
+    sz = len(arma.name) + 1
+    sz = (sz + 3) // 4 * 4
     rootAddr = skeleNameAddr + sz
     fout.write('uint', rootAddr, skeleAddr, offset=0x10) # root bone pointer
     nextAddr = writeBone(fout, rootAddr, bones[0]) # write bone tree
