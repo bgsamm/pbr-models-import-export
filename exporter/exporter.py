@@ -236,7 +236,8 @@ def writeBone(file, address, bone):
             file.write('float', s[2], 0, whence='current')
             nextAddr += 12
         if bone.name == 'ct_all':
-            # this affects camera positioning; should not be hard-coded
+            # this affects camera positioning during run animation;
+            # should not be hard-coded
             file.write('float', 8, address, offset=0x1c)
 
     nameAddr = nextAddr
@@ -429,8 +430,12 @@ def writeMesh(file, address, object):
                 w1 = v.groups[0].weight
                 w2 = v.groups[1].weight
                 # weights are out of 0xffff
-                # normalize in case there are > 2 groups
-                weight = round(0xffff * (w1 / (w1 + w2)))
+                if w1 == w2:
+                    # handles the case where both w1 and w2 are 0
+                    weight = 0x8000
+                else:
+                    # normalize in case there are > 2 groups
+                    weight = round(0xffff * (w1 / (w1 + w2)))
             else:
                 file.write('ushort', 0, 0, whence='current')
                 # only one group, give entire weight to it
