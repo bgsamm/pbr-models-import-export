@@ -557,10 +557,10 @@ def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
         image = bpy.data.images.new(f'image{i}', img.width, img.height)
         # Blender expects values to be normalized
         image.pixels = [(x / 255) for x in img.pixels]
-        path = f'{os.path.dirname(path)}/texture{i}.png'
-        image.filepath_raw = path
-        image.file_format = 'PNG'
-        image.save()
+        #path = f'{os.path.dirname(path)}/texture{i}.png'
+        #image.filepath_raw = path
+        #image.file_format = 'PNG'
+        #image.save()
         images[i] = image
     
     # create materials
