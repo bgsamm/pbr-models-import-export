@@ -5,10 +5,6 @@ from ..shared.file_io import BinaryWriter
 def approxEqual(f1, f2):
     return math.isclose(f1, f2, rel_tol=1e-05, abs_tol=0.001)
 
-def isSkin(name):
-    return any(name == child.name for child in arma.children
-               if child.type == 'MESH')
-
 def isBoneAnimated(bone):
     return any(bone.name in actions[action_id]['bones']
                for action_id in actions)
@@ -191,15 +187,10 @@ def writeAction(file, address, action_id):
 
 def writeBone(file, address, bone):
     print(bone.name)
-    # if bone name is the same as a child mesh, mark it as a skin node
-    if isSkin(bone.name):
-        file.write('uint', 0x3, address)
-        nextAddr = address + 0x3c
-    else:
-        nextAddr = address + 0x30
-
-    # root bone, skin bones cannot be vertex groups
-    if not isSkin(bone.name) and bone.parent is not None:
+    nextAddr = address + 0x30
+    
+    # root bone cannot be part of a vertex group
+    if bone.parent is not None:
         transform = bone.parent.matrix_local.inverted() @ bone.matrix_local
         t,r,s = transform.decompose()
         # regular bones don't actually contain scale info in
@@ -358,7 +349,7 @@ def writeKeyframes(file, address, keyframes, scale):
     file.seek(framesAddr)
     for i in range(numFrames):
         kf = keyframes[i]
-        # using constant interpolation for everything atm
+        # interpolation - using constant (0) for everything atm
         file.write('ushort', 0, 0, whence='current')
         file.write('ushort', i, 0, whence='current')
         timestamp = kf[0] / FRAME_RATE
@@ -740,6 +731,27 @@ def writeSDR(path, cx):
     t0 = time.time()
 
     # meshes
+    address = fout.read('uint', rootAddr, offset=0x24)
+    while True:
+        nextSibling = fout.read('uint', address, offset=0x28)
+        if nextSibling == 0:
+            break
+        address = nextSibling
+    fout.write('uint', nextAddr, address, offset=0x28)
+    address = nextAddr
+    # add skin nodes
+    for i in range(len(meshes)):
+        fout.write('uint', 0x3, address, offset=0)
+        nameAddr = address + 0x3c
+        fout.write('uint', nameAddr, address, offset=0x4)
+        idx = len(bones) + i
+        fout.write('ushort', idx, address, offset=0x8)
+        fout.write('ushort', 0x18, address, offset=0xa)
+        fout.write('string', meshes[i].name, nameAddr)
+        sz = len(bone.name) + 1 # null terminate
+        sz = (sz + 3) // 4 * 4
+        nextAddr = nameAddr + sz
+        fout.write('uint', nextAddr, address, offset=0x28)
     writeMeshes(fout, rootAddr, nextAddr)
     print('Meshes:', time.time() - t0)
 

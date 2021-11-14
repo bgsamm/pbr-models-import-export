@@ -145,7 +145,7 @@ subpanels = (
 class ImportModel(Operator, ImportHelper):
     '''Import a model from Pokémon Battle Revolution'''
     bl_idname = 'pbr.import'
-    bl_label = 'PBR Model (.sdr)'
+    bl_label = 'PBR Model (.sdr/.odr/.mdr)'
     bl_options = {'REGISTER', 'UNDO'}
 
     filter_glob: StringProperty(
@@ -158,7 +158,7 @@ class ImportModel(Operator, ImportHelper):
         description="Some models' bind poses are pretty funky at " + \
                     "the moment. Enable\nthis to import models in " + \
                     "their default pose instead.",
-        default=False
+        default=True
     )
 
     join_meshes: BoolProperty(
