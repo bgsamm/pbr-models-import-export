@@ -18,6 +18,7 @@ if 'bpy' in locals():
 
 import bpy
 from bpy.types import (
+    Scene,
     Panel,
     Operator,
     Armature,
@@ -31,9 +32,54 @@ from bpy_extras.io_utils import ExportHelper
 from .importer import importer
 from .exporter import exporter
 
+## Material animations tab
+
+anim_name = StringProperty(
+    name='',
+    description='The name of the new material animation to create.',
+    maxlen=1024,
+)
+
+class AddMatAnim(Operator):
+    bl_idname = 'wm.add_mat_anim'
+    bl_label = 'Create new animation'
+    
+    def execute(self, context):
+        scene = context.scene
+        action = bpy.data.actions.new(scene.prop_anim_name)
+        action.id_root = 'NODETREE'
+        scene.prop_anim_name = ''
+        return {'FINISHED'}
+
+class MatAnimPanel(Panel):
+    bl_idname = 'OBJECT_PT_mat_anims_panel'
+    bl_label = 'Animations'
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'PBR'
+    bl_context = 'objectmode'
+    
+    @classmethod
+    def poll(self, context):
+        return context.object is not None and \
+            context.object.type == 'MESH'
+    
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        obj = context.object
+        
+        for slot in obj.material_slots:
+            mat = slot.material
+            layout.prop_search(mat, f'prop_action',
+                                bpy.data, 'actions', text=mat.name)
+        layout.separator()
+        layout.prop(scene, 'prop_anim_name')
+        layout.operator('wm.add_mat_anim')
+
 ### Animation selection tab
 
-class PBR_PT_Panel(Panel):
+class PBRPanel(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'PBR'
@@ -63,81 +109,81 @@ class PBR_PT_Panel(Panel):
                 layout.prop_search(mat, f'prop_{self.anim_id}',
                                     bpy.data, 'actions', text=mat.name)
 
-class PBR_PT_PropertiesPanel(PBR_PT_Panel):
+class PBRPropertiesPanel(PBRPanel):
     bl_options = set()
     bl_label = 'Animations'
-    bl_idname = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_properties_panel'
 
     def draw(self, context):
         return
 
-class PBR_PT_IdleAnimPanel(PBR_PT_Panel):
+class IdleAnimPanel(PBRPanel):
     bl_label = 'Idle'
-    bl_idname = 'PBR_PT_idle_anim_panel'
-    bl_parent_id = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_idle_anim_panel'
+    bl_parent_id = 'OBJECT_PT_properties_panel'
     anim_id = 'idle'
 
-class PBR_PT_RunAnimPanel(PBR_PT_Panel):
+class RunAnimPanel(PBRPanel):
     bl_label = 'Run'
-    bl_idname = 'PBR_PT_run_anim_panel'
-    bl_parent_id = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_run_anim_panel'
+    bl_parent_id = 'OBJECT_PT_properties_panel'
     anim_id = 'run'
 
-class PBR_PT_DamageAnimPanel(PBR_PT_Panel):
+class DamageAnimPanel(PBRPanel):
     bl_label = 'Damage'
-    bl_idname = 'PBR_PT_damage_anim_panel'
-    bl_parent_id = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_damage_anim_panel'
+    bl_parent_id = 'OBJECT_PT_properties_panel'
     anim_id = 'damage'
 
-class PBR_PT_FaintAnimPanel(PBR_PT_Panel):
+class FaintAnimPanel(PBRPanel):
     bl_label = 'Faint'
-    bl_idname = 'PBR_PT_faint_anim_panel'
-    bl_parent_id = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_faint_anim_panel'
+    bl_parent_id = 'OBJECT_PT_properties_panel'
     anim_id = 'faint'
 
-class PBR_PT_PhysAnimPanel(PBR_PT_Panel):
+class PhysAnimPanel(PBRPanel):
     bl_label = 'Phys'
-    bl_idname = 'PBR_PT_phys_anim_panel'
-    bl_parent_id = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_phys_anim_panel'
+    bl_parent_id = 'OBJECT_PT_properties_panel'
     anim_id = 'move_phys'
 
-class PBR_PT_SpecAnimPanel(PBR_PT_Panel):
+class SpecAnimPanel(PBRPanel):
     bl_label = 'Spec'
-    bl_idname = 'PBR_PT_spec_anim_panel'
-    bl_parent_id = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_spec_anim_panel'
+    bl_parent_id = 'OBJECT_PT_properties_panel'
     anim_id = 'move_spec'
 
-class PBR_PT_BlinkAnimPanel(PBR_PT_Panel):
+class BlinkAnimPanel(PBRPanel):
     bl_label = 'Blink'
-    bl_idname = 'PBR_PT_blink_anim_panel'
-    bl_parent_id = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_blink_anim_panel'
+    bl_parent_id = 'OBJECT_PT_properties_panel'
     anim_id = 'tx_wink'
     show_arma_prop = False
 
-class PBR_PT_SleepAnimPanel(PBR_PT_Panel):
+class SleepAnimPanel(PBRPanel):
     bl_label = 'Sleep'
-    bl_idname = 'PBR_PT_sleep_anim_panel'
-    bl_parent_id = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_sleep_anim_panel'
+    bl_parent_id = 'OBJECT_PT_properties_panel'
     anim_id = 'tx_sleep'
     show_arma_prop = False
 
-class PBR_PT_WakeupAnimPanel(PBR_PT_Panel):
+class WakeupAnimPanel(PBRPanel):
     bl_label = 'Wake Up'
-    bl_idname = 'PBR_PT_wakeup_anim_panel'
-    bl_parent_id = 'PBR_PT_properties_panel'
+    bl_idname = 'OBJECT_PT_wakeup_anim_panel'
+    bl_parent_id = 'OBJECT_PT_properties_panel'
     anim_id = 'tx_wakeup'
     show_arma_prop = False
 
 subpanels = (
-    PBR_PT_IdleAnimPanel,
-    PBR_PT_RunAnimPanel,
-    PBR_PT_DamageAnimPanel,
-    PBR_PT_FaintAnimPanel,
-    PBR_PT_PhysAnimPanel,
-    PBR_PT_SpecAnimPanel,
-    PBR_PT_BlinkAnimPanel,
-    PBR_PT_SleepAnimPanel,
-    PBR_PT_WakeupAnimPanel
+    IdleAnimPanel,
+    RunAnimPanel,
+    DamageAnimPanel,
+    FaintAnimPanel,
+    PhysAnimPanel,
+    SpecAnimPanel,
+    BlinkAnimPanel,
+    SleepAnimPanel,
+    WakeupAnimPanel
 )
 
 ### Import/export operators
@@ -209,6 +255,11 @@ def poll_obj(self, object):
 def poll_node(self, object):
     return object.id_root == 'NODETREE'
 
+def set_mat_action(self, context):
+    if not self.node_tree.animation_data:
+        self.node_tree.animation_data_create()
+    self.node_tree.animation_data.action = self.prop_action
+
 def register():
     from bpy.utils import register_class
     # import/export operators
@@ -216,8 +267,14 @@ def register():
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     register_class(ExportModel)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
+    # material animations tab
+    register_class(AddMatAnim)
+    register_class(MatAnimPanel)
+    Material.prop_action = \
+            PointerProperty(type=Action, poll=poll_node, update=set_mat_action)
+    Scene.prop_anim_name = anim_name
     # animations tab
-    register_class(PBR_PT_PropertiesPanel)
+    register_class(PBRPropertiesPanel)
     for cls in subpanels:
         register_class(cls)
         setattr(Armature, f'prop_{cls.anim_id}',
@@ -233,11 +290,16 @@ def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     unregister_class(ExportModel)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
+    # material animations tab
+    unregister_class(MatAnimPanel)
+    del Material.prop_action
+    del Scene.prop_anim_name
     # animations tab
-    unregister_class(PBR_PT_PropertiesPanel)
+    unregister_class(PBRPropertiesPanel)
     for cls in subpanels:
         unregister_class(cls)
         RemoveProperty(Armature, attr=f'prop_{cls.anim_id}')
+        RemoveProperty(Material, attr=f'prop_{cls.anim_id}')
 
 if __name__ == '__main__':
     register()

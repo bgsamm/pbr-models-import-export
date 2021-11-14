@@ -718,7 +718,8 @@ def writeSDR(path, cx):
     fout.write('ushort', 0x1, 0x18) # skeleton count
     fout.write('uint', skeleAddr, skeleListAddr)
     fout.write('uint', skeleNameAddr, skeleAddr, offset=0)
-    fout.write('ushort', len(bones), skeleAddr, offset=0x6)
+    # an extra bone will get added for each mesh
+    fout.write('ushort', len(bones) + len(meshes), skeleAddr, offset=0x6)
     fout.write('ushort', len(actions), skeleAddr, offset=0x8)
     fout.write('uint', actionListAddr, skeleAddr, offset=0xc)
     fout.write('string', arma.name, skeleNameAddr)
@@ -748,10 +749,12 @@ def writeSDR(path, cx):
         fout.write('ushort', idx, address, offset=0x8)
         fout.write('ushort', 0x18, address, offset=0xa)
         fout.write('string', meshes[i].name, nameAddr)
-        sz = len(bone.name) + 1 # null terminate
+        sz = len(meshes[i].name) + 1 # null terminate
         sz = (sz + 3) // 4 * 4
         nextAddr = nameAddr + sz
-        fout.write('uint', nextAddr, address, offset=0x28)
+        if i < len(meshes) - 1:
+            fout.write('uint', nextAddr, address, offset=0x28)
+        address = nextAddr
     writeMeshes(fout, rootAddr, nextAddr)
     print('Meshes:', time.time() - t0)
 
