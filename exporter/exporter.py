@@ -400,7 +400,14 @@ def writeMesh(file, address, object):
     nextAddr = file.tell()
 
     # weights
-    if any(len(v.groups) > 0 for v in mesh.vertices):
+    vertGroups = []
+    for v in mesh.vertices:
+        groups = sorted(v.groups, key=lambda x : x.weight, reverse=True)
+        if len(groups) > 4:
+            operator.report({'WARNING'}, 'A vertex is part of more than 4 vertex groups;\n' + \
+                            'lowest weighted group(s) will be culled')
+        vertGroups.append(groups[:4])
+    if any(len(groups) > 0 for groups in vertGroups):
         skinAddr = nextAddr
         file.write('uint', skinAddr, address, offset=0xc)
         file.write('ushort', len(mesh.vertices), skinAddr, offset=0x8)
@@ -409,17 +416,16 @@ def writeMesh(file, address, object):
         file.write('uint', groupsListAddr, skinAddr, offset=0xc)
         weightsListAddr = groupsListAddr + 6 * len(mesh.vertices)
         file.write('uint', weightsListAddr, skinAddr, offset=0x10)
-        for i in range(len(mesh.vertices)):
-            v = mesh.vertices[i]
-            assert len(v.groups) <= 4
+        for i in range(len(vertGroups)):
+            groups = vertGroups[i]
             file.write('ushort', 1, groupsListAddr, offset=(6 * i))
-            b1 = getVertexGroupBoneIndex(object, v.groups[0].group)
+            b1 = getVertexGroupBoneIndex(object, groups[0].group)
             file.write('ushort', b1, 0, whence='current')
-            if len(v.groups) > 1:
-                b2 = getVertexGroupBoneIndex(object, v.groups[1].group)
+            if len(groups) > 1:
+                b2 = getVertexGroupBoneIndex(object, groups[1].group)
                 file.write('ushort', b2, 0, whence='current')
-                w1 = v.groups[0].weight
-                w2 = v.groups[1].weight
+                w1 = groups[0].weight
+                w2 = groups[1].weight
                 # weights are out of 0xffff
                 if w1 == w2:
                     # handles the case where both w1 and w2 are 0
@@ -436,14 +442,15 @@ def writeMesh(file, address, object):
         file.write('uint', groupsListAddr, skinAddr, offset=0x18)
         n = 0
         file.seek(groupsListAddr)
-        for v in mesh.vertices:
-            if len(v.groups) > 2:
-                file.write('ushort', v.index, 0, whence='current')
-                b1 = getVertexGroupBoneIndex(object, v.groups[2].group)
-                w1 = round(v.groups[2].weight * 0xffff)
-                if len(v.groups) == 4:
-                    b2 = getVertexGroupBoneIndex(object, v.groups[3].group)
-                    w2 = round(v.groups[3].weight * 0xffff)
+        for i in range(len(vertGroups)):
+            groups = vertGroups[i]
+            if len(groups) > 2:
+                file.write('ushort', i, 0, whence='current')
+                b1 = getVertexGroupBoneIndex(object, groups[2].group)
+                w1 = round(groups[2].weight * 0xffff)
+                if len(groups) == 4:
+                    b2 = getVertexGroupBoneIndex(object, groups[3].group)
+                    w2 = round(groups[3].weight * 0xffff)
                 else:
                     b2 = 0xffff
                     w2 = 0
@@ -555,11 +562,12 @@ def writeMesh(file, address, object):
 
     return file.tell()
 
-def writeSDR(path, cx):
+def writeSDR(op, cx):
     t0 = time.time()
     print('Start')
     assert cx.object.type == 'ARMATURE'
 
+    global operator
     global context
     global FRAME_RATE
 
@@ -570,6 +578,9 @@ def writeSDR(path, cx):
     global textures
     global keyframes
 
+    operator = op
+    path = op.filepath
+    
     context = cx
     FRAME_RATE = cx.scene.render.fps
 
