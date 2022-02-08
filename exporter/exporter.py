@@ -193,13 +193,12 @@ def writeBone(file, address, bone):
     if bone.parent is not None:
         transform = bone.parent.matrix_local.inverted() @ bone.matrix_local
         t,r,s = transform.decompose()
-        # regular bones don't actually contain scale info in
-        # Blender from what I can tell, so just going to use
-        # the origin's posed scale for now
+        # regular bones don't actually contain scale info in Blender
+        # from what I can tell, so use the origin's posed scale
         if bone.name.lower() == 'origin':
             s = arma.pose.bones[bone.name].scale
         r = r.to_euler()
-        # gonna mark every bone as a vertex group instead
+        # just gonna mark every bone as a vertex group instead
         # of trying to track which ones actually are
         file.write('uint', 0x2, address)
         # inverse bind matrix
@@ -241,7 +240,9 @@ def writeBone(file, address, bone):
     sz = (sz + 3) // 4 * 4
     nextAddr = nameAddr + sz
 
-    if isBoneAnimated(bone):
+    # since the origin bone is used for scaling, ignore its
+    # animation data (it shouldn't be animated anyway)
+    if bone.name.lower() != 'origin' and isBoneAnimated(bone):
         file.write('uint', nextAddr, address, offset=0x20)
         nextAddr = writeFCurves(file, nextAddr, bone)
 
