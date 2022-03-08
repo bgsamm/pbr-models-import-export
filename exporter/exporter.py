@@ -265,7 +265,7 @@ def writeFCurves(file, address, object):
     for action_id in actions:
         file.write('ushort', i, address, offset=0)
         # anim. length can't be 0 or it will freeze the game
-        animLength = actions[action_id]['length'] / FRAME_RATE
+        animLength = max(actions[action_id]['length'] / FRAME_RATE, 0.0001)
         file.write('float', animLength, address, offset=0x8)
 
         numFCurves = 0
