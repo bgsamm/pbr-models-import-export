@@ -380,8 +380,8 @@ def writeMeshes(file, boneAddr, nextAddr):
 
     return nextAddr
 
-def writeMesh(file, address, object):
-    mesh = object.data
+def writeMesh(file, address, obj):
+    mesh = obj.data
     file.write('ushort', 0xa00, address)
     numVerts = len(mesh.vertices)
     file.write('ushort', numVerts, address, offset=0x2)
@@ -420,10 +420,10 @@ def writeMesh(file, address, object):
         for i in range(len(vertGroups)):
             groups = vertGroups[i]
             file.write('ushort', 1, groupsListAddr, offset=(6 * i))
-            b1 = getVertexGroupBoneIndex(object, groups[0].group)
+            b1 = getVertexGroupBoneIndex(obj, groups[0].group)
             file.write('ushort', b1, 0, whence='current')
             if len(groups) > 1:
-                b2 = getVertexGroupBoneIndex(object, groups[1].group)
+                b2 = getVertexGroupBoneIndex(obj, groups[1].group)
                 file.write('ushort', b2, 0, whence='current')
                 w1 = groups[0].weight
                 w2 = groups[1].weight
@@ -447,10 +447,10 @@ def writeMesh(file, address, object):
             groups = vertGroups[i]
             if len(groups) > 2:
                 file.write('ushort', i, 0, whence='current')
-                b1 = getVertexGroupBoneIndex(object, groups[2].group)
+                b1 = getVertexGroupBoneIndex(obj, groups[2].group)
                 w1 = round(groups[2].weight * 0xffff)
                 if len(groups) == 4:
-                    b2 = getVertexGroupBoneIndex(object, groups[3].group)
+                    b2 = getVertexGroupBoneIndex(obj, groups[3].group)
                     w2 = round(groups[3].weight * 0xffff)
                 else:
                     b2 = 0xffff
@@ -478,10 +478,10 @@ def writeMesh(file, address, object):
     # face groups
     facesAddr = file.tell()
     file.write('uint', facesAddr, address, offset=0x18)
-    for i in range(len(object.material_slots)):
+    for i in range(len(obj.material_slots)):
         file.write('uint', 0x1, facesAddr)
         faces = [face for face in mesh.polygons if face.material_index == i]
-        mat = object.material_slots[i].material
+        mat = obj.material_slots[i].material
         matListAddr = file.read('uint', 0, offset=0x14)
         matAddr = file.read('uint', matListAddr,
                             offset=(4 * materials.index(mat)))
@@ -535,31 +535,31 @@ def writeMesh(file, address, object):
         file.write('uchar', 0xff, 2, whence='current')
 
         nextAddr = vertInfoAddr + 0xc0
-        if i < len(object.material_slots) - 1:
+        if i < len(obj.material_slots) - 1:
             file.write('uint', nextAddr, facesAddr, offset=0x1c)
             facesAddr = nextAddr
 
     # bounding boxes
-    unknownAddr = nextAddr
-    file.write('uint', unknownAddr, address, offset=0x1c)
-    file.write('ushort', 0x1, unknownAddr, offset=0x18) # count
-    file.write('uint', unknownAddr + 0x24, unknownAddr, offset=0x1c)
+    bboxesAddr = nextAddr
+    file.write('uint', bboxesAddr, address, offset=0x1c)
+    file.write('ushort', 0x1, bboxesAddr, offset=0x18) # count
+    file.write('uint', bboxesAddr + 0x24, bboxesAddr, offset=0x1c)
 
-    file.write('ushort', 0x1, unknownAddr, offset=0x24) # count
+    file.write('ushort', 0x1, bboxesAddr, offset=0x24) # count
     file.write('uchar', 0x1e, 0, whence='current')
     file.write('uchar', 0x0, 0, whence='current') # could be 0x8
-    file.write('uint', unknownAddr + 0x30, 0, whence='current')
+    file.write('uint', bboxesAddr + 0x30, 0, whence='current')
 
     # currently just writing a single bounding box for
     # proper scaling in the Pokemon summary menu
-    file.write('float', 0.0, unknownAddr, offset=0x30)
-    file.write('float', 0.0, 0, whence='current')
-    file.write('float', 0.0, 0, whence='current')
-    file.write('float', 1.0, 0, whence='current')
-    # this should probably not be hard-coded but I'm not sure
-    # how to determine the correct value dynamically yet
-    file.write('float', 8.0, 0, whence='current')
-    file.write('float', 1.0, 0, whence='current')
+    x_min, y_min, z_min = [min(dim) for dim in zip(*obj.bound_box)]
+    x_max, y_max, z_max = [max(dim) for dim in zip(*obj.bound_box)]
+    file.write('float', x_min, bboxesAddr, offset=0x30)
+    file.write('float', y_min, 0, whence='current')
+    file.write('float', z_min, 0, whence='current')
+    file.write('float', x_max, 0, whence='current')
+    file.write('float', y_max, 0, whence='current')
+    file.write('float', z_max, 0, whence='current')
 
     return file.tell()
 
