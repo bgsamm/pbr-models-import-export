@@ -337,12 +337,15 @@ def parseBones(file, address, bones, useDefaultPose=False):
             
     if k == 0x3: # skin node
         meshAddr = file.read('uint', address, offset=0x30)
-        if meshAddr not in mesh_dict:
-            mesh_dict[meshAddr] = {
-                'object': parseMesh(file, meshAddr),
-                'index': len(mesh_dict)
-            }
-        bone.meshIndex = mesh_dict[meshAddr]['index']
+        # very hack-y fix to a bug I need to look closer at
+        meshStartAddr = file.read('uint', meshAddr, offset=0x18)
+        if meshStartAddr != 0:
+            if meshAddr not in mesh_dict:
+                mesh_dict[meshAddr] = {
+                    'object': parseMesh(file, meshAddr),
+                    'index': len(mesh_dict)
+                }
+            bone.meshIndex = mesh_dict[meshAddr]['index']
     yield bone
     
     nextAddr = file.read('uint', address, offset=0x28)
