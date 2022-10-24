@@ -2,7 +2,7 @@
 A Blender add-on for importing/exporting Pokémon Battle Revolution's models into/from Blender.
 
 ## How to use
-Download the repository as a ZIP file, then add that ZIP as an add-on in Blender by going to `Edit > Preferences > Add-ons > Install`.
+Download the repository as a ZIP file. In Blender, going to `Edit > Preferences > Add-ons > Install`, then select the ZIP file you downloaded to install the add-on.
 
 ### Importing
 Navigate to `File > Import > PBR model (.sdr/.odr/.mdr)` and select your `.sdr`, `.odr`, or `.mdr` file.
