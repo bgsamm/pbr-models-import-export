@@ -129,6 +129,7 @@ def parseFCurves(file, address, boneName):
             fcurveAddr = fcurveListAddr + i * 0x10
             axis = file.read('uchar', fcurveAddr, offset=0x2)
             compIndex = file.read('uchar', fcurveAddr, offset=0x1)
+            dataType = file.read('uchar', fcurveAddr, offset=0x6)
             if compIndex >= 3:
                 print(f'Unknown component type: {compIndex} ({boneName}, {hex(fcurveAddr)})')
                 continue
@@ -147,29 +148,44 @@ def parseFCurves(file, address, boneName):
 def parseKeyframes(file, address, scale_exp):
     valsAddr = file.read('uint', address, offset=0)
     derivsAddr = file.read('uint', address, offset=0x4)
+    valueCount = file.read('ushort', address, offset=0x8)
     keyframesAddr = file.read('uint', address, offset=0x10)
     numKeyframes = file.read('ushort', address, offset=0x14)
     keyframes = []
-    for i in range(numKeyframes):
-        keyframeAddr = keyframesAddr + i * 0xc
-        interpIndex = file.read('ushort', keyframeAddr)
-        interpolation = ['constant', 'linear', 'hermite'][interpIndex]
-        valueIndex = file.read('ushort', keyframeAddr, offset=0x2)
-        value = file.read('short', valsAddr, offset=(2 * valueIndex))
-        if derivsAddr > 0:
-            derivLIndex = file.read('ushort', keyframeAddr, offset=0x4)
-            derivLeft = file.read('float', derivsAddr, offset=(4 * derivLIndex))
-            derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
-            derivRight = file.read('float', derivsAddr, offset=(4 * derivRIndex))
-        else:
-            derivLeft = 0.0
-            derivRight = 0.0
-        time = file.read('float', keyframeAddr, offset=0x8)
-        keyframe = {'value': value / (2 ** scale_exp),
-                    'derivativeL': derivLeft,
-                    'derivativeR': derivRight,
-                    'time': time}
-        keyframes.append(keyframe)
+    if numKeyframes > 0:
+        for i in range(numKeyframes):
+            keyframeAddr = keyframesAddr + i * 0xc
+            interpIndex = file.read('ushort', keyframeAddr)
+            interpolation = ['constant', 'linear', 'hermite'][interpIndex]
+            valueIndex = file.read('ushort', keyframeAddr, offset=0x2)
+            value = file.read('short', valsAddr, offset=(2 * valueIndex))
+            if derivsAddr > 0:
+                derivLIndex = file.read('ushort', keyframeAddr, offset=0x4)
+                derivLeft = file.read('float', derivsAddr, offset=(4 * derivLIndex))
+                derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
+                derivRight = file.read('float', derivsAddr, offset=(4 * derivRIndex))
+            else:
+                derivLeft = 0.0
+                derivRight = 0.0
+            time = file.read('float', keyframeAddr, offset=0x8)
+            keyframe = {'value': value / (2 ** scale_exp),
+                        'derivativeL': derivLeft,
+                        'derivativeR': derivRight,
+                        'time': time}
+            keyframes.append(keyframe)
+    elif valueCount > 0:
+        # "keyframe" animation. stores data for each individual frame
+        # probably used for baked data, such as animation data from constraints and IK
+        framerate = file.read('ushort', address, offset=0x16) & 0xFF
+        print("valueCount: ", valueCount)
+        for i in range(valueCount):
+            value = file.read('short', valsAddr, offset=(2 * i))
+            time = (0.5 + (i - 1)) / framerate
+            keyframe = {'value': value / (2 ** scale_exp),
+                        'derivativeL': 0.0,
+                        'derivativeR': 0.0,
+                        'time': time}
+            keyframes.append(keyframe)
     return keyframes
 
 def parseWeights(file, address):
@@ -339,6 +355,7 @@ def parseBones(file, address, bones, useDefaultPose=False):
     nameAddr = file.read('uint', address, offset=0x4)
     name = file.read('string', nameAddr)
     idx = file.read('ushort', address, offset=0x8)
+    flags = file.read('ushort', address, offset=0xA)
 
     pos = Matrix.Identity(4)
     posAddr = file.read('uint', address, offset=0xc)
@@ -349,7 +366,7 @@ def parseBones(file, address, bones, useDefaultPose=False):
         pos = Matrix.Translation((x, y, z))
     else:
         pos = Matrix.Identity(4)
-
+    
     if useDefaultPose:
         rotAddr = file.read('uint', address, offset=0x10)
         if rotAddr != 0:
@@ -378,6 +395,7 @@ def parseBones(file, address, bones, useDefaultPose=False):
         ry = file.read('float', 0, whence='current')
         rz = file.read('float', 0, whence='current')
         rot2 = toRotationMatrix(rx, ry, rz)
+        orot = rot
         rot = rot2 @ rot
         # inverse bind matrix
         mat = []
@@ -393,8 +411,14 @@ def parseBones(file, address, bones, useDefaultPose=False):
                [0.0, 1.0, 0.0, 0.0],
                [0.0, 0.0, 1.0, 0.0],
                [0.0, 0.0, 0.0, 1.0]]
+        rot2 = Matrix.Identity(4)
+        orot = Matrix.Identity(4)
     mat = Matrix(mat)
-    bone = Bone(idx, name, (pos @ rot @ sca), mat)
+    #bone = Bone(idx, name, (pos @ rot @ sca), mat)
+    bone = Bone(idx, name, (pos @ rot @ sca), mat, rot2, orot, sca, pos, flags)
+    bone.type = k
+    bone.idk1 = file.read('uint', address, offset=0x40)
+    bone.idk2 = file.read('uint', address, offset=0x74)
     bones[idx] = bone
 
     animDataAddr = file.read('uint', address, offset=0x20)
@@ -558,8 +582,9 @@ def applyWeights(meshData, bones):
         transform = Matrix.Diagonal((0, 0, 0, 0))
         for idx, w in meshData.weights[i].items():
             transform = transform + \
-                        w * (bones[idx].globalTransform @ \
-                             bones[idx].inverseBindMatrix)
+                         w * (bones[idx].inverseBindMatrix)
+        #                w * (bones[idx].globalTransform @ \
+        #                     bones[idx].inverseBindMatrix)
         vert = transform @ Vector(meshData.vertices[i])
         vertices.append(tuple(vert))
         transform = transform.to_3x3() # remove translation
@@ -616,7 +641,10 @@ def makeArmature_r(edit_bones, bones, boneIndex):
     boneData = bones[boneIndex]
     bone = edit_bones.new(boneData.name)
     bone.tail = (0, 0, 0.5) # length = 0.5
-    bone.transform(boneData.globalTransform)
+    # TODO: move this to pose data
+    #bone.transform(boneData.globalTransform)
+    #bone.transform(boneData.inverseBindMatrix.inverted())
+    bone.matrix = Matrix.Identity(4)
     for childIndex in boneData.childIndices:
         child = makeArmature_r(edit_bones, bones, childIndex)
         child.parent = bone
@@ -632,6 +660,13 @@ def makeArmature(context, skele):
     edit_bones.remove(edit_bones['Bone'])
     makeArmature_r(edit_bones, skele.bones, 0)
     bpy.ops.object.mode_set(mode='OBJECT')
+    for bone in skele.bones:
+        b = arma.pose.bones[bone.name]
+        b.matrix_basis = bone.localTransform
+        b["type"] = bone.type
+        b["flag"] = "{0:b}".format(bone.flags)
+        b["idk1"] = hex(bone.idk1)
+        b["idk2"] = hex(bone.idk2)
     
     return arma
 

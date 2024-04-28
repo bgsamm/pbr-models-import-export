@@ -45,13 +45,20 @@ class MeshPart:
         self.materialIndex = matID
 
 class Bone:
-    def __init__(self, i, name, trans, mat):
+    def __init__(self, i, name, trans, mat, brot, rot, sca, pos, flags):
         self.index = i
         self.name = name
+
+        self.inverseBindMatrix = mat
+        
+        self.initialRot = rot #TODO:
+        self.initialScale = sca
+        self.initialTrans = pos
+        self.bindRotation = brot
+        self.flags = flags
         
         self.localTransform = trans
         # self.globalTransform calculated by Skeleton
-        self.inverseBindMatrix = mat
 
         self.childIndices = []
         self.parentIndex = None
@@ -66,8 +73,17 @@ class Skeleton:
 
         self.calcGlobalTransforms(0, Matrix.Identity(4))
 
+    #def calcGlobalTransforms(self, idx, parentTransform):
+    #    bone = self.bones[idx]
+    #    bone.globalTransform = parentTransform @ bone.localTransform
+    #    for childIndex in bone.childIndices:
+    #        self.calcGlobalTransforms(childIndex, bone.globalTransform)
+
     def calcGlobalTransforms(self, idx, parentTransform):
         bone = self.bones[idx]
-        bone.globalTransform = parentTransform @ bone.localTransform
+        bone.globalTransform = bone.localTransform
+        if (bone.flags >> 3) & 1:
+            bone.globalTransform = parentTransform @ bone.globalTransform
+
         for childIndex in bone.childIndices:
             self.calcGlobalTransforms(childIndex, bone.globalTransform)
