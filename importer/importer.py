@@ -3,8 +3,8 @@ from mathutils import Euler, Matrix, Vector
 
 import bpy, bmesh
 
-from ..shared import gtx
-from ..shared.classes import *
+from . import gtx
+from .classes import *
 from ..shared.const import *
 from ..shared.file_io import BinaryReader
 
@@ -409,12 +409,15 @@ def parseBones(file, address, bones, useDefaultPose=False):
             
     if k == 0x3: # skin node
         meshAddr = file.read('uint', address, offset=0x30)
-        if meshAddr not in mesh_dict:
-            mesh_dict[meshAddr] = {
-                'object': parseMesh(file, meshAddr),
-                'index': len(mesh_dict)
-            }
-        bone.meshIndex = mesh_dict[meshAddr]['index']
+        # very hack-y fix to a bug I need to look closer at
+        meshStartAddr = file.read('uint', meshAddr, offset=0x18)
+        if meshStartAddr != 0:
+            if meshAddr not in mesh_dict:
+                mesh_dict[meshAddr] = {
+                    'object': parseMesh(file, meshAddr),
+                    'index': len(mesh_dict)
+                }
+            bone.meshIndex = mesh_dict[meshAddr]['index']
     yield bone
     
     nextAddr = file.read('uint', address, offset=0x28)
@@ -642,10 +645,10 @@ def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
         image = bpy.data.images.new(f'image{i}', img.width, img.height)
         # Blender expects values to be normalized
         image.pixels = [(x / 255) for x in img.pixels]
-        path = f'{os.path.dirname(path)}\\texture{i}.png'
-        image.filepath_raw = path
-        image.file_format = 'PNG'
-        image.save()
+        #path = f'{os.path.dirname(path)}/texture{i}.png'
+        #image.filepath_raw = path
+        #image.file_format = 'PNG'
+        #image.save()
         images[i] = image
     
     # create materials

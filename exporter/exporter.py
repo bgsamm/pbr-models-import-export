@@ -1,45 +1,33 @@
+import time
 import bpy, math, struct
 from ..shared.file_io import BinaryWriter
 
-arma = None
-bones = None
+def approxEqual(f1, f2):
+    return math.isclose(f1, f2, rel_tol=1e-05, abs_tol=0.001)
 
-actions = []
-materials = []
-textures = {}
+def isBoneAnimated(bone):
+    return any(bone.name in actions[action_id]['bones']
+               for action_id in actions)
 
-matListAddr = 0
-
-def isSkin(name):
-    return name in (child.name for child in arma.children
-                    if child.type == 'MESH')
-
-def isAnimated(bone):
-    return any(len(getBoneFCurves(bone, action)) > 0 for action in actions)
-
-def isFCurveConstant(fcurve):
-    startVal = fcurve.keyframe_points[0].co.y
-    for keyframe in fcurve.keyframe_points[1:]:
-        if abs(keyframe.co.y - startVal) > 0.001:
-            return False
-    return True
-
-def getBoneFCurves(bone, action):
-    return [fc for fc in action.fcurves if bone.name == fc.group.name
-            and not isFCurveConstant(fc)]
-
-def getFramesInBoneAction(bone, action):
-    frames = set()
-    for fcurve in getBoneFCurves(bone, action):
-        frames.update([kf.co.x for kf in fcurve.keyframe_points])
-    return tuple(sorted(frames))
+def isMaterialAnimated(mat):
+    return any(mat.name in actions[action_id]['materials']
+               for action_id in actions)
 
 def getVertexGroupBoneIndex(object, groupID):
     return [bone.name for bone in bones] \
            .index(object.vertex_groups[groupID].name)
 
 def getMatTexture(material):
-    return [n for n in material.node_tree.nodes if n.type == 'TEX_IMAGE'][0]
+    textures = [n for n in material.node_tree.nodes if n.type == 'TEX_IMAGE']
+    if len(textures) > 0:
+        return textures[0]
+    return None
+
+def getMatMapNode(material):
+    maps = [n for n in material.node_tree.nodes if n.type == 'MAPPING']
+    if len(maps) > 0:
+        return maps[0]
+    return None
 
 def imageToRGB5A3(image):
     w,h = image.size
@@ -67,7 +55,6 @@ def imageToRGB5A3(image):
                               ((g >> 3) << 5) + \
                               (b >> 3)
                     data[idx:idx+2] = val.to_bytes(2, 'big')
-                    data += val.to_bytes(2, 'big')
                     idx += 2
     return bytes(data)
 
@@ -107,21 +94,22 @@ def writeTexture(file, address, texture):
         file.write('uint', 1, address, offset=0x14) # y
     else:
         raise Exception(f"Extrapolation type '{texture.extension}' unsupported")
-    file.write('uint', 0x80, address, offset=0x28) # image offset
+    # image data address needs to be a multiple of 0x20
+    offset = 0x80 + address % 0x20
+    file.write('uint', offset, address, offset=0x28)
     #data = imageToRGBA32(image) # currently doesn't load correctly in-game
     data = imageToRGB5A3(image)
     file.write('uint', len(data), address, offset=0x4c)
-    file.write_chunk(data, address + 0x80)
+    file.write_chunk(data, address + offset)
     return file.tell() + 0x10 # next address (add some padding)
 
 def writeMaterial(file, address, material):
+    # name
     nameAddr = address + 0x8c
     file.write('uint', nameAddr, address)
-
-    # name
     file.write('string', material.name, nameAddr)
-    sz = len(material.name)
-    sz = (sz // 4) * 4 + 4
+    sz = len(material.name) + 1 # null terminate
+    sz = (sz + 3) // 4 * 4
     nextAddr = nameAddr + sz
 
     texture = getMatTexture(material)
@@ -172,35 +160,45 @@ def writeMaterial(file, address, material):
     file.write('uchar', 0x0, 0, whence='current')
     file.write('uchar', 0x0, 0, whence='current')
 
-    return file.tell() + 1
+    # animation data
+    nextAddr = file.tell() + 1
+    if isMaterialAnimated(material):
+        file.write('uint', nextAddr, address, offset=0x84)
+        nextAddr = writeFCurves(file, nextAddr, material)
 
-def writeAction(file, address, action):
-    time = action.frame_range.y / FRAME_RATE
+    return nextAddr
+
+def writeAction(file, address, action_id):
+    time = actions[action_id]['length'] / FRAME_RATE
+    # determines portion of animation played during attacks
+    if action_id == 'move_spec':
+        # 1.5 is fairly arbitrary, length of Psychic's animation
+        file.write('float', time - 1.5, address, offset=0x4)
+    # determines position of mon when animation is played
+    if action_id == 'move_phys':
+        # 1.0 is entirely arbitrary
+        file.write('float', 1.0, address, offset=0x8)
     file.write('float', time, address, offset=0xc)
     file.write('uchar', 1, address, offset=0x28) # loops?
-    file.write('uchar', 1, address, offset=0x29)
+    if not action_id.startswith('tx_'):
+        file.write('uchar', 1, address, offset=0x29)
     file.write('uchar', 1, address, offset=0x2a)
     return address + 0x30
 
 def writeBone(file, address, bone):
-    # if bone name is the same as a child mesh, mark it as a skin node
-    if isSkin(bone.name):
-        file.write('uint', 0x3, address)
-        nextAddr = address + 0x3c
-    else:
-        nextAddr = address + 0x30
-
-    # root bone, skin bones cannot be vertex groups
-    if not isSkin(bone.name) and bone.parent is not None:
+    print(bone.name)
+    nextAddr = address + 0x30
+    
+    # root bone cannot be part of a vertex group
+    if bone.parent is not None:
         transform = bone.parent.matrix_local.inverted() @ bone.matrix_local
         t,r,s = transform.decompose()
-        # regular bones don't actually contain scale info in
-        # Blender from what I can tell, so just going to use
-        # the origin's posed scale for now
+        # regular bones don't actually contain scale info in Blender
+        # from what I can tell, so use the origin's posed scale
         if bone.name.lower() == 'origin':
             s = arma.pose.bones[bone.name].scale
         r = r.to_euler()
-        # gonna mark every bone as a vertex group instead
+        # just gonna mark every bone as a vertex group instead
         # of trying to track which ones actually are
         file.write('uint', 0x2, address)
         # inverse bind matrix
@@ -227,6 +225,10 @@ def writeBone(file, address, bone):
             file.write('float', s[1], 0, whence='current')
             file.write('float', s[2], 0, whence='current')
             nextAddr += 12
+        if bone.name == 'ct_all':
+            # this affects camera positioning during run animation;
+            # should not be hard-coded
+            file.write('float', 8, address, offset=0x1c)
 
     nameAddr = nextAddr
     file.write('uint', nameAddr, address, offset=0x4)
@@ -234,14 +236,15 @@ def writeBone(file, address, bone):
     file.write('ushort', idx, address, offset=0x8)
     file.write('ushort', 0x18, address, offset=0xa)
     file.write('string', bone.name, nameAddr)
-    sz = len(bone.name)
-    sz = (sz // 4) * 4 + 4
+    sz = len(bone.name) + 1 # null terminate
+    sz = (sz + 3) // 4 * 4
     nextAddr = nameAddr + sz
 
-    if isAnimated(bone):
+    # since the origin bone is used for scaling, ignore its
+    # animation data (it shouldn't be animated anyway)
+    if bone.name.lower() != 'origin' and isBoneAnimated(bone):
         file.write('uint', nextAddr, address, offset=0x20)
-        poseBone = arma.pose.bones[bone.name]
-        nextAddr = writeFCurves(file, nextAddr, poseBone)
+        nextAddr = writeFCurves(file, nextAddr, bone)
 
     if len(bone.children) > 0:
         file.write('uint', nextAddr, address, offset=0x24)
@@ -257,60 +260,64 @@ def writeBone(file, address, bone):
 
     return nextAddr
 
-# TODO: filter out constant fcurves
-def writeFCurves(file, address, poseBone):
-    print(poseBone.name)
-    for i in range(len(actions)):
-        action = actions[i]
+def writeFCurves(file, address, object):
+    i = 0
+    for action_id in actions:
         file.write('ushort', i, address, offset=0)
         # anim. length can't be 0 or it will freeze the game
-        animLength = action.frame_range[1] / FRAME_RATE
+        animLength = max(actions[action_id]['length'] / FRAME_RATE, 0.0001)
         file.write('float', animLength, address, offset=0x8)
-        if len(getBoneFCurves(poseBone, action)) == 0:
-            nextAddr = address + 0x10
-        else:
-            numFCurves = 9
-            file.write('ushort', numFCurves, address, offset=0x2)
-            fcurveListAddr = address + 0x10
-            file.write('uint', fcurveListAddr, address, offset=0x4)
 
-            nextAddr = fcurveListAddr + numFCurves * 0x10
-            arma.animation_data.action = action
-            frames = getFramesInBoneAction(poseBone, action)
-            keyframes = [[[], [], []], # tx, ty, tz
-                         [[], [], []], # rx, ry, rz
-                         [[], [], []]] # sx, sy, sz
-            for frame in frames:
-                context.scene.frame_set(frame)
-                transform = poseBone.parent.matrix.inverted() @ poseBone.matrix
-                t,r,s = transform.decompose()
-                r = r.to_euler()
-                for j in range(3):
-                    keyframes[0][j].append((frame, t[j]))
-                    keyframes[1][j].append((frame, r[j]))
-                    keyframes[2][j].append((frame, s[j]))
-            for m in range(3): # t,r,s
-                for n in range(3): # x,y,z
-                    entryAddr = fcurveListAddr + (m * 3 + n) * 0x10
-                    file.write('uchar', m, entryAddr, offset=0x1)
-                    file.write('uchar', n+1, entryAddr, offset=0x2) # axis index
-                    file.write('uchar', 0x8, entryAddr, offset=0x6) # format code?
-                    # calc largest exponent that satisfies
-                    #   |x| * (2 ^ exp) < (2 ^ 15)
-                    # for all keyframe points (2 ^ 15 = max signed short)
-                    umax = max(abs(kf[1]) for kf in keyframes[m][n])
-                    if umax == 0.0:
-                        exp = 0
-                    else:
-                        exp = min(14, math.ceil(15 - math.log(umax, 2)) - 1)
-                    file.write('uchar', exp, entryAddr, offset=0x7)
-                    file.write('uint', nextAddr, entryAddr, offset=0x8)
-                    nextAddr = writeKeyframes(file, nextAddr,
-                                              keyframes[m][n], 2 ** exp)
+        numFCurves = 0
+        if type(object) == bpy.types.Bone:
+            if object.name in actions[action_id]['bones']:
+                keyframes = actions[action_id]['bones'][object.name]
+            else:
+                keyframes = {
+                    0: { 0: [(0, 0)], 1: [(0, 0)], 2: [(0, 0)] }, # t (x, y, z)
+                    1: { 0: [(0, 0)], 1: [(0, 0)], 2: [(0, 0)] }, # r (x, y, z)
+                    2: { 0: [(0, 1)], 1: [(0, 1)], 2: [(0, 1)] }, # s (x, y, z)
+                }
+        elif type(object) == bpy.types.Material:
+            if object.name in actions[action_id]['materials']:
+                keyframes = actions[action_id]['materials'][object.name]
+            else:
+                keyframes = {
+                    0x14: { 0: [(0, 0)], 1: [(0, 0)] }, # t (x, y)
+                    0x16: { 0: [(0, 1)], 1: [(0, 1)] }, # s (x, y)
+                }
+        for comp in keyframes:
+            numFCurves += len(keyframes[comp])
+        file.write('ushort', numFCurves, address, offset=0x2)
+        fcurveListAddr = address + 0x10
+        file.write('uint', fcurveListAddr, address, offset=0x4)
+
+        nextAddr = fcurveListAddr + numFCurves * 0x10
+        c = 0
+        for m in keyframes: # component
+            for n in keyframes[m]: # axis
+                entryAddr = fcurveListAddr + c * 0x10
+                file.write('uchar', m, entryAddr, offset=0x1)
+                file.write('uchar', n+1, entryAddr, offset=0x2)
+                file.write('uchar', 0x8, entryAddr, offset=0x6) # format code?
+                # calc largest exponent that satisfies
+                #   |x| * (2 ^ exp) < (2 ^ 15)
+                # for all keyframe points (2 ^ 15 = max signed short)
+                umax = max(abs(kf[1]) for kf in keyframes[m][n])
+                if umax == 0.0:
+                    exp = 0
+                else:
+                    exp = min(14, math.ceil(15 - math.log(umax, 2)) - 1)
+                file.write('uchar', exp, entryAddr, offset=0x7)
+                file.write('uint', nextAddr, entryAddr, offset=0x8)
+                nextAddr = writeKeyframes(file, nextAddr,
+                                          keyframes[m][n], 2 ** exp)
+                c += 1
         # actions are stored in a linked list
         if i < len(actions) - 1:
             file.write('uint', nextAddr, address, offset=0xc)
         address = nextAddr
+        i += 1
     return nextAddr
 
 def writeKeyframes(file, address, keyframes, scale):
@@ -318,14 +325,13 @@ def writeKeyframes(file, address, keyframes, scale):
     numFrames = len(keyframes)
     pointsAddr = address + 0x20
     # each point uses 2 bytes so need to do some alignment
-    framesAddr = pointsAddr + (numFrames // 2) * 4 + 4
+    framesAddr = pointsAddr + (numFrames * 2 + 3) // 4 * 4
     file.write('uint', pointsAddr, address, offset=0)
     file.write('ushort', numFrames, address, offset=0x8)
     file.write('float', maxTime, address, offset=0xc)
     file.write('uint', framesAddr, address, offset=0x10)
     file.write('ushort', numFrames, address, offset=0x14)
     file.write('float', -1234567.0, address, offset=0x18) # "-inf"
-
     file.seek(pointsAddr)
     for kf in keyframes:
         scaled = round(kf[1] * scale)
@@ -341,14 +347,14 @@ def writeKeyframes(file, address, keyframes, scale):
 ##            file.write('float', h0, 0, whence='current')
 ##            file.write('float', h1, 0, whence='current')
 
+    file.seek(framesAddr)
     for i in range(numFrames):
-        frameAddr = framesAddr + i * 0xc
         kf = keyframes[i]
-        # using constant interpolation for everything atm
-        file.write('ushort', 0, frameAddr, offset=0)
-        file.write('ushort', i, frameAddr, offset=0x2)
+        # interpolation - using constant (0) for everything atm
+        file.write('ushort', 0, 0, whence='current')
+        file.write('ushort', i, 0, whence='current')
         timestamp = kf[0] / FRAME_RATE
-        file.write('float', timestamp, frameAddr, offset=0x8)
+        file.write('float', timestamp, 4, whence='current')
     return framesAddr + numFrames * 0xc
 
 def writeMeshes(file, boneAddr, nextAddr):
@@ -374,8 +380,8 @@ def writeMeshes(file, boneAddr, nextAddr):
 
     return nextAddr
 
-def writeMesh(file, address, object):
-    mesh = object.data
+def writeMesh(file, address, obj):
+    mesh = obj.data
     file.write('ushort', 0xa00, address)
     numVerts = len(mesh.vertices)
     file.write('ushort', numVerts, address, offset=0x2)
@@ -395,7 +401,14 @@ def writeMesh(file, address, object):
     nextAddr = file.tell()
 
     # weights
-    if any(len(v.groups) > 0 for v in mesh.vertices):
+    vertGroups = []
+    for v in mesh.vertices:
+        groups = sorted(v.groups, key=lambda x : x.weight, reverse=True)
+        if len(groups) > 4:
+            operator.report({'WARNING'}, 'A vertex is part of more than 4 vertex groups;\n' + \
+                            'lowest weighted group(s) will be culled')
+        vertGroups.append(groups[:4])
+    if any(len(groups) > 0 for groups in vertGroups):
         skinAddr = nextAddr
         file.write('uint', skinAddr, address, offset=0xc)
         file.write('ushort', len(mesh.vertices), skinAddr, offset=0x8)
@@ -404,20 +417,23 @@ def writeMesh(file, address, object):
         file.write('uint', groupsListAddr, skinAddr, offset=0xc)
         weightsListAddr = groupsListAddr + 6 * len(mesh.vertices)
         file.write('uint', weightsListAddr, skinAddr, offset=0x10)
-        for i in range(len(mesh.vertices)):
-            v = mesh.vertices[i]
-            assert len(v.groups) <= 4
+        for i in range(len(vertGroups)):
+            groups = vertGroups[i]
             file.write('ushort', 1, groupsListAddr, offset=(6 * i))
-            b1 = getVertexGroupBoneIndex(object, v.groups[0].group)
+            b1 = getVertexGroupBoneIndex(obj, groups[0].group)
             file.write('ushort', b1, 0, whence='current')
-            if len(v.groups) > 1:
-                b2 = getVertexGroupBoneIndex(object, v.groups[1].group)
+            if len(groups) > 1:
+                b2 = getVertexGroupBoneIndex(obj, groups[1].group)
                 file.write('ushort', b2, 0, whence='current')
-                w1 = v.groups[0].weight
-                w2 = v.groups[1].weight
+                w1 = groups[0].weight
+                w2 = groups[1].weight
                 # weights are out of 0xffff
-                # normalize in case there are > 2 groups
-                weight = round(0xffff * (w1 / (w1 + w2)))
+                if w1 == w2:
+                    # handles the case where both w1 and w2 are 0
+                    weight = 0x8000
+                else:
+                    # normalize in case there are > 2 groups
+                    weight = round(0xffff * (w1 / (w1 + w2)))
             else:
                 file.write('ushort', 0, 0, whence='current')
                 # only one group, give entire weight to it
@@ -427,14 +443,15 @@ def writeMesh(file, address, object):
         file.write('uint', groupsListAddr, skinAddr, offset=0x18)
         n = 0
         file.seek(groupsListAddr)
-        for v in mesh.vertices:
-            if len(v.groups) > 2:
-                file.write('ushort', v.index, 0, whence='current')
-                b1 = getVertexGroupBoneIndex(object, v.groups[2].group)
-                w1 = round(v.groups[2].weight * 0xffff)
-                if len(v.groups) == 4:
-                    b2 = getVertexGroupBoneIndex(object, v.groups[3].group)
-                    w2 = round(v.groups[3].weight * 0xffff)
+        for i in range(len(vertGroups)):
+            groups = vertGroups[i]
+            if len(groups) > 2:
+                file.write('ushort', i, 0, whence='current')
+                b1 = getVertexGroupBoneIndex(obj, groups[2].group)
+                w1 = round(groups[2].weight * 0xffff)
+                if len(groups) == 4:
+                    b2 = getVertexGroupBoneIndex(obj, groups[3].group)
+                    w2 = round(groups[3].weight * 0xffff)
                 else:
                     b2 = 0xffff
                     w2 = 0
@@ -461,20 +478,23 @@ def writeMesh(file, address, object):
     # face groups
     facesAddr = file.tell()
     file.write('uint', facesAddr, address, offset=0x18)
-    for i in range(len(object.material_slots)):
+    for i in range(len(obj.material_slots)):
         file.write('uint', 0x1, facesAddr)
         faces = [face for face in mesh.polygons if face.material_index == i]
-        mat = object.material_slots[i].material
+        mat = obj.material_slots[i].material
+        matListAddr = file.read('uint', 0, offset=0x14)
         matAddr = file.read('uint', matListAddr,
                             offset=(4 * materials.index(mat)))
         file.write('uint', matAddr, facesAddr, offset=0x8)
 
         file.write('ushort', 0x1, facesAddr, offset=0xc) # num. ops
         faceOpsAddr = facesAddr + 0x40
-        faceOpsAddr = (faceOpsAddr // 0x20) * 0x20
+        # the start address needs to be a multiple of 0x20
+        faceOpsAddr = (faceOpsAddr + 0x1f) // 0x20 * 0x20
         file.write('uint', faceOpsAddr, facesAddr, offset=0x14)
         faceOpsSize = 0x3 + len(faces) * 3 * 6
-        faceOpsSize = (faceOpsSize // 0x10) * 0x10 + 0x10
+        # the region size also needs to be a multiple of 0x20
+        faceOpsSize = (faceOpsSize + 0x1f) // 0x20 * 0x20
         file.write('uint', faceOpsSize, facesAddr, offset=0x18)
         vertInfoAddr = faceOpsAddr + faceOpsSize
         file.write('uint', vertInfoAddr, facesAddr, offset=0x10)
@@ -515,37 +535,40 @@ def writeMesh(file, address, object):
         file.write('uchar', 0xff, 2, whence='current')
 
         nextAddr = vertInfoAddr + 0xc0
-        if i < len(object.material_slots) - 1:
+        if i < len(obj.material_slots) - 1:
             file.write('uint', nextAddr, facesAddr, offset=0x1c)
             facesAddr = nextAddr
 
     # bounding boxes
-    unknownAddr = nextAddr
-    file.write('uint', unknownAddr, address, offset=0x1c)
-    file.write('ushort', 0x1, unknownAddr, offset=0x18) # count
-    file.write('uint', unknownAddr + 0x24, unknownAddr, offset=0x1c)
+    bboxesAddr = nextAddr
+    file.write('uint', bboxesAddr, address, offset=0x1c)
+    file.write('ushort', 0x1, bboxesAddr, offset=0x18) # count
+    file.write('uint', bboxesAddr + 0x24, bboxesAddr, offset=0x1c)
 
-    file.write('ushort', 0x1, unknownAddr, offset=0x24) # count
+    file.write('ushort', 0x1, bboxesAddr, offset=0x24) # count
     file.write('uchar', 0x1e, 0, whence='current')
     file.write('uchar', 0x0, 0, whence='current') # could be 0x8
-    file.write('uint', unknownAddr + 0x30, 0, whence='current')
+    file.write('uint', bboxesAddr + 0x30, 0, whence='current')
 
     # currently just writing a single bounding box for
     # proper scaling in the Pokemon summary menu
-    file.write('float', 0.0, unknownAddr, offset=0x30)
-    file.write('float', 0.0, 0, whence='current')
-    file.write('float', 0.0, 0, whence='current')
-    file.write('float', 1.0, 0, whence='current')
-    # this should not be hard-coded but I'm not sure how
-    # to determine the correct value dynamically
-    file.write('float', 8.0, 0, whence='current')
-    file.write('float', 1.0, 0, whence='current')
+    x_min, y_min, z_min = [min(dim) for dim in zip(*obj.bound_box)]
+    x_max, y_max, z_max = [max(dim) for dim in zip(*obj.bound_box)]
+    file.write('float', x_min, bboxesAddr, offset=0x30)
+    file.write('float', y_min, 0, whence='current')
+    file.write('float', z_min, 0, whence='current')
+    file.write('float', x_max, 0, whence='current')
+    file.write('float', y_max, 0, whence='current')
+    file.write('float', z_max, 0, whence='current')
 
     return file.tell()
 
-def writeSDR(path, cx):
+def writeSDR(op, cx):
+    t0 = time.time()
+    print('Start')
     assert cx.object.type == 'ARMATURE'
 
+    global operator
     global context
     global FRAME_RATE
 
@@ -554,29 +577,103 @@ def writeSDR(path, cx):
     global actions
     global materials
     global textures
-    global matListAddr
+    global keyframes
 
+    operator = op
+    path = op.filepath
+    
     context = cx
     FRAME_RATE = cx.scene.render.fps
 
     arma = context.object
     bones = arma.data.bones
-    actions = []
-    names = [bone.name for bone in bones]
-    for action in bpy.data.actions:
-        if any(fc.group is not None and fc.group.name
-               in names for fc in action.fcurves):
-            actions.append(action)
 
     meshes = [child for child in arma.children if child.type == 'MESH']
     materials = []
     for mesh in meshes:
         materials += [slot.material for slot in mesh.material_slots]
+
     textures = {}
     for mat in materials:
         tex = getMatTexture(mat)
         if tex.image.name not in textures:
             textures[tex.image.name] = tex
+
+    # build keyframe dictionary
+    actions = {}
+    # material animations MUST start with "tx_"
+    action_ids = ['idle', 'run', 'damage', 'faint', 'move_phys', 'move_spec',
+                  'tx_wink', 'tx_sleep', 'tx_wakeup']
+    for action_id in action_ids:
+        actions[action_id] = { 'length': 0, 'bones': {}, 'materials': {} }
+        action = getattr(arma.data, f'prop_{action_id}')
+        if action:
+            arma.animation_data.action = action
+            actions[action_id]['length'] = action.frame_range.y
+            for frame in range(int(action.frame_range[1] + 1)):
+                context.scene.frame_set(frame)
+                # root bone cannot be animated
+                for bone in arma.pose.bones[1:]:
+                    if bone.name not in actions[action_id]['bones']:
+                        actions[action_id]['bones'][bone.name] = {
+                            0: { 0: [], 1: [], 2: [] }, # t (x, y, z)
+                            1: { 0: [], 1: [], 2: [] }, # r (x, y, z)
+                            2: { 0: [], 1: [], 2: [] }, # s (x, y, z)
+                        }
+                    keyframes = actions[action_id]['bones'][bone.name]
+                    transform = bone.parent.matrix.inverted() \
+                                @ bone.matrix
+                    comps = list(transform.decompose())
+                    comps[1] = comps[1].to_euler()
+                    for m in range(3):
+                        for n in range(3):
+                            if len(keyframes[m][n]) == 0 or \
+                               not approxEqual(keyframes[m][n][-1][1],
+                                               comps[m][n]):
+                                keyframes[m][n].append((frame, comps[m][n]))
+        # loop over materials
+        for mat in materials:
+            action = getattr(mat, f'prop_{action_id}')
+            if action:
+                actions[action_id]['length'] = max(action.frame_range.y,
+                                                   actions[action_id]['length'])
+                if not mat.node_tree.animation_data:
+                    mat.node_tree.animation_data_create()
+                mat.node_tree.animation_data.action = action
+                if mat.name not in actions[action_id]['materials']:
+                    actions[action_id]['materials'][mat.name] = {
+                        0x14: { 0: [], 1: [] }, # t (x, y)
+                        0x16: { 0: [], 1: [] }, # s (x, y)
+                    }
+                keyframes = actions[action_id]['materials'][mat.name]
+                mapNode = getMatMapNode(mat)
+                for frame in range(int(action.frame_range[1] + 1)):
+                    context.scene.frame_set(frame)
+                    for n in range(2): # x, y
+                        t = mapNode.inputs[1].default_value[n]
+                        # Blender goes bottom-to-top, game goes top-to-bottom
+                        if n == 1:
+                            t = 1.0 - t
+                        if len(keyframes[0x14][n]) == 0 or \
+                           not approxEqual(keyframes[0x14][n][-1][1], t):
+                            keyframes[0x14][n].append((frame, t))
+                        s = mapNode.inputs[3].default_value[n]
+                        if len(keyframes[0x16][n]) == 0 or \
+                           not approxEqual(keyframes[0x16][n][-1][1], s):
+                            keyframes[0x16][n].append((frame, s))
+        # filtering breaks the animation, not sure why yet
+##            # filter out constant f-curves
+##            for bone in arma.data.bones[1:]:
+##                keyframes = actions[i]['bones'][bone.name]
+##                for m in range(3):
+##                    keyframes[m] = { k:v for k,v in keyframes[m].items()
+##                                     if len(v) > 1 }
+##                keyframes = { k:v for k,v in keyframes.items()
+##                              if len(v) > 0 }
+##                actions[i]['bones'][bone.name] = keyframes
+
+    print('Initialization:', time.time() - t0)
+    t0 = time.time()
 
     fout = BinaryWriter(path)
     fout.write('uchar', 0x1, 0)
@@ -587,35 +684,43 @@ def writeSDR(path, cx):
     fout.write('uint', texListAddr, 0xc)
     fout.write('ushort', len(textures), 0x1a)
     nextAddr = texListAddr + 4 * len(textures)
-    nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
+    nextAddr = (nextAddr + 0xf) // 0x10 * 0x10
     i = 0
     for tex in textures.values():
         textures[tex.image.name]['address'] = nextAddr
         fout.write('uint', nextAddr, texListAddr, offset=(4 * i))
         nextAddr = writeTexture(fout, nextAddr, tex)
         i += 1
+    print('Textures:', time.time() - t0)
+    t0 = time.time()
 
     # materials
     matListAddr = nextAddr
     fout.write('uint', matListAddr, 0x14)
     fout.write('ushort', len(materials), 0x1e)
     nextAddr = matListAddr + 4 * len(materials)
-    nextAddr = (nextAddr // 0x10) * 0x10 + 0x10
+    nextAddr = (nextAddr + 0xf) // 0x10 * 0x10
     for i in range(len(materials)):
         fout.write('uint', nextAddr, matListAddr, offset=(4 * i))
         nextAddr = writeMaterial(fout, nextAddr, materials[i])
+    print('Materials:', time.time() - t0)
+    t0 = time.time()
 
     # actions
     actionListAddr = nextAddr
-    for action in actions:
-        nextAddr = writeAction(fout, nextAddr, action)
-    for i in range(len(actions)):
+    for action_id in actions:
+        nextAddr = writeAction(fout, nextAddr, action_id)
+    i = 0
+    for action_id in actions:
         actionAddr = actionListAddr + i * 0x30
         fout.write('uint', nextAddr, actionAddr)
-        fout.write('string', actions[i].name, nextAddr)
-        sz = len(actions[i].name)
-        sz = (sz // 4) * 4 + 4
+        fout.write('string', action_id, nextAddr)
+        sz = len(action_id) + 1 # null terminate
+        sz = (sz + 3) // 4 * 4
         nextAddr += sz
+        i += 1
+    print('Actions:', time.time() - t0)
+    t0 = time.time()
 
     # skeleton
     skeleListAddr = nextAddr
@@ -625,18 +730,45 @@ def writeSDR(path, cx):
     fout.write('ushort', 0x1, 0x18) # skeleton count
     fout.write('uint', skeleAddr, skeleListAddr)
     fout.write('uint', skeleNameAddr, skeleAddr, offset=0)
-    fout.write('ushort', len(bones), skeleAddr, offset=0x6)
+    # an extra bone will get added for each mesh
+    fout.write('ushort', len(bones) + len(meshes), skeleAddr, offset=0x6)
     fout.write('ushort', len(actions), skeleAddr, offset=0x8)
     fout.write('uint', actionListAddr, skeleAddr, offset=0xc)
     fout.write('string', arma.name, skeleNameAddr)
-    sz = len(arma.name)
-    sz = (sz // 4) * 4 + 4
+    sz = len(arma.name) + 1
+    sz = (sz + 3) // 4 * 4
     rootAddr = skeleNameAddr + sz
     fout.write('uint', rootAddr, skeleAddr, offset=0x10) # root bone pointer
     nextAddr = writeBone(fout, rootAddr, bones[0]) # write bone tree
+    print('Skeleton:', time.time() - t0)
+    t0 = time.time()
 
     # meshes
+    address = fout.read('uint', rootAddr, offset=0x24)
+    while True:
+        nextSibling = fout.read('uint', address, offset=0x28)
+        if nextSibling == 0:
+            break
+        address = nextSibling
+    fout.write('uint', nextAddr, address, offset=0x28)
+    address = nextAddr
+    # add skin nodes
+    for i in range(len(meshes)):
+        fout.write('uint', 0x3, address, offset=0)
+        nameAddr = address + 0x3c
+        fout.write('uint', nameAddr, address, offset=0x4)
+        idx = len(bones) + i
+        fout.write('ushort', idx, address, offset=0x8)
+        fout.write('ushort', 0x18, address, offset=0xa)
+        fout.write('string', meshes[i].name, nameAddr)
+        sz = len(meshes[i].name) + 1 # null terminate
+        sz = (sz + 3) // 4 * 4
+        nextAddr = nameAddr + sz
+        if i < len(meshes) - 1:
+            fout.write('uint', nextAddr, address, offset=0x28)
+        address = nextAddr
     writeMeshes(fout, rootAddr, nextAddr)
+    print('Meshes:', time.time() - t0)
 
     fout.close()
     print(f'\n"{arma.name}" exported successfully.')
