@@ -51,11 +51,13 @@ class Bone:
 
         self.inverseBindMatrix = mat
         
-        self.initialRot = rot #TODO:
+        self.initialRot = rot
         self.initialScale = sca
         self.initialTrans = pos
         self.bindRotation = brot
         self.flags = flags
+
+        self.parentRelativeBind = None
         
         self.localTransform = trans
         # self.globalTransform calculated by Skeleton
@@ -73,17 +75,13 @@ class Skeleton:
 
         self.calcGlobalTransforms(0, Matrix.Identity(4))
 
-    #def calcGlobalTransforms(self, idx, parentTransform):
-    #    bone = self.bones[idx]
-    #    bone.globalTransform = parentTransform @ bone.localTransform
-    #    for childIndex in bone.childIndices:
-    #        self.calcGlobalTransforms(childIndex, bone.globalTransform)
-
-    def calcGlobalTransforms(self, idx, parentTransform):
+    def calcGlobalTransforms(self, idx, parentTransform, invparentBind = Matrix.Identity(4)):
         bone = self.bones[idx]
-        bone.globalTransform = bone.localTransform
-        if (bone.flags >> 3) & 1:
-            bone.globalTransform = parentTransform @ bone.globalTransform
+        s = invparentBind.to_scale()
+        #invparentBindWithoutScale = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0)) @ invparentBind
+        bone.invparentBind = invparentBind
+        bone.parentRelativeBind = invparentBind @ bone.inverseBindMatrix.inverted()
+        bone.globalTransform = parentTransform @ bone.localTransform
 
         for childIndex in bone.childIndices:
-            self.calcGlobalTransforms(childIndex, bone.globalTransform)
+            self.calcGlobalTransforms(childIndex, bone.globalTransform, bone.inverseBindMatrix)
