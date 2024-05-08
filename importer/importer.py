@@ -725,24 +725,6 @@ def makeAction(actionData, arma, skele):
                 fcurve = action.fcurves.new(datapath, index=ax)
                 finalCurves[f'{c}{ax}'] = fcurve
 
-        # scale corrections for blender
-        if b.parent:
-            s = (bone.invparentBind @ bone.inverseBindMatrix.inverted()).to_scale()
-            for ax in [0, 1, 2]:
-                fcurve = temporaryCurves[f'{"s"}{ax}']
-                for i in range(len(fcurve.keyframe_points)):
-                    fcurve.keyframe_points[i].co[1] /= s[ax]
-                    fcurve.keyframe_points[i].handle_left /= s[ax]
-                    fcurve.keyframe_points[i].handle_right /= s[ax]
-
-            s = (b.parent.bone.matrix_local @ bone.invparentBind).to_scale()
-            for ax in [0, 1, 2]:
-                fcurve = temporaryCurves[f'{"t"}{ax}']
-                for i in range(len(fcurve.keyframe_points)):
-                    fcurve.keyframe_points[i].co[1] /= s[ax]
-                    fcurve.keyframe_points[i].handle_left /= s[ax]
-                    fcurve.keyframe_points[i].handle_right /= s[ax]
-
         # sample curves and calculate values corrected for the edit bone transformation
         for i in range(sampleFrames):
             frame = i * bpy.context.scene.render.fps / sampleFramerate
@@ -759,6 +741,17 @@ def makeAction(actionData, arma, skele):
             rotation = rotation_z @ rotation_y @ rotation_x
             scale = scale_z @ scale_y @ scale_x
             targetMtx = translation @ jointOrientation @ rotation @ scale
+
+            # scale corrections for blender
+            s = bone.inverseBindMatrix.to_scale()
+            C = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
+            targetMtx = targetMtx @ C
+            
+            if b.parent:
+                s = bone.invparentBind.to_scale()
+                C = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0))
+                targetMtx = C @ targetMtx
+
             correctedMatrix = invRelativeBind @ targetMtx
 
             trans, rot, scale = correctedMatrix.decompose()
@@ -826,17 +819,16 @@ def makeArmature(context, skele):
             relativeBind = b.parent.bone.matrix_local.inverted() @ b.bone.matrix_local
         else:
             relativeBind = b.bone.matrix_local
-        
+
         # scale corrections for blender
+        s = bone.inverseBindMatrix.to_scale()
+        C = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
+        local = local @ C
+        
         if b.parent:
-            trans, rot, scale = local.decompose()
-            s = (bone.invparentBind @ bone.inverseBindMatrix.inverted()).to_scale()
-            scale = [scale[i] / s[i] for i in range(3)]
-
-            s = (b.parent.bone.matrix_local @ bone.invparentBind).to_scale()
-            trans = [trans[i] / s[i] for i in range(3)]
-
-            local = Matrix.LocRotScale(trans, rot, scale)
+            s = bone.invparentBind.to_scale()
+            C = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0))
+            local = C @ local
 
         b.matrix_basis = relativeBind.inverted() @ local
         b["type"] = bone.type
