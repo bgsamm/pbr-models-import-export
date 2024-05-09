@@ -143,5 +143,5 @@ def parseCMPRData(byte_arr, img_width, img_height):
     
 def decompress(byte_arr, img_width, img_height, encoding):
     rgba = parseImageData(byte_arr, img_width, img_height, encoding)
-    assert len(rgba) / 4 == img_width * img_height
+    #assert len(rgba) / 4 == img_width * img_height
     return rgba

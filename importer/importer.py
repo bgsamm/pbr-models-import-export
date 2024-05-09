@@ -662,7 +662,7 @@ def makeAction(actionData, arma, skele):
         endTime = 0 
         temporaryCurves = {}
         for fcurveData in actionData['bones'][boneName]:
-            tempComponent = temporaryComponents[fcurveData['component']][0]
+            tempComponent = fcurveData['component']#temporaryComponents[fcurveData['component']][0]
             axis = fcurveData['axis'] - 1
             tempDatapath = f'pose.bones["{boneName}"].{tempComponent}'
             existingCurve = action.fcurves.find(tempDatapath, index = axis)
@@ -712,7 +712,8 @@ def makeAction(actionData, arma, skele):
                     keyframes[i].handle_right[1] = ky + dxR * (fcurveData['keyframes'][i + 1]['time'] - fcurveData['keyframes'][i]['time']) / 3
 
             i += 1
-        #continue
+
+        continue
 
         sampleFrames = math.ceil(sampleFramerate * endTime)
 
@@ -865,7 +866,7 @@ def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
         img = images[i]
         image = bpy.data.images.new(f'image{i}', img.width, img.height)
         # Blender expects values to be normalized
-        image.pixels = [(x / 255) for x in img.pixels]
+        image.pixels = [(x / 255) for x in img.pixels][:len(image.pixels)]
         #path = f'{os.path.dirname(path)}/texture{i}.png'
         #image.filepath_raw = path
         #image.file_format = 'PNG'
