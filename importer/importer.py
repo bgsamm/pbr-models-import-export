@@ -650,6 +650,14 @@ def makeAction(actionData, arma, skele):
         invRelativeBind = relativeBind.inverted()
         jointOrientation = bone.bindRotation
 
+        # scale corrections for blender
+        s = bone.inverseBindMatrix.inverted().to_scale()
+        C_1 = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0))
+        
+        if b.parent:
+            s = bone.invparentBind.inverted().to_scale()
+            C_2 = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
+
         # temp components and static values
         temporaryComponents = {
             'location': ('t', bone.initialTrans),
@@ -662,7 +670,7 @@ def makeAction(actionData, arma, skele):
         endTime = 0 
         temporaryCurves = {}
         for fcurveData in actionData['bones'][boneName]:
-            tempComponent = fcurveData['component']#temporaryComponents[fcurveData['component']][0]
+            tempComponent = temporaryComponents[fcurveData['component']][0]
             axis = fcurveData['axis'] - 1
             tempDatapath = f'pose.bones["{boneName}"].{tempComponent}'
             existingCurve = action.fcurves.find(tempDatapath, index = axis)
@@ -713,7 +721,7 @@ def makeAction(actionData, arma, skele):
 
             i += 1
 
-        continue
+        #continue
 
         sampleFrames = math.ceil(sampleFramerate * endTime)
 
@@ -751,15 +759,10 @@ def makeAction(actionData, arma, skele):
             scale = scale_z @ scale_y @ scale_x
             targetMtx = translation @ jointOrientation @ rotation @ scale
 
-            # scale corrections for blender
-            s = bone.inverseBindMatrix.to_scale()
-            C = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
-            targetMtx = targetMtx @ C
-            
+            # blender scale corrections
+            targetMtx = targetMtx @ C_1
             if b.parent:
-                s = bone.invparentBind.to_scale()
-                C = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0))
-                targetMtx = C @ targetMtx
+                targetMtx = C_2 @ targetMtx
 
             correctedMatrix = invRelativeBind @ targetMtx
 
