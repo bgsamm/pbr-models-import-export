@@ -345,7 +345,7 @@ def parseMeshPart(file, address):
         for mesh in parseMeshPart(file, nextMeshAddr):
             yield mesh
 
-def parseSkeleton(file, address, useDefaultPose=False):
+def parseSkeleton(file, address, useDefaultPose=False, sceneSettings=None):
     objNameAddr = file.read('uint', address, offset=0)
     name = file.read('string', objNameAddr)
     # actions
@@ -356,10 +356,10 @@ def parseSkeleton(file, address, useDefaultPose=False):
     numBones = file.read('ushort', address, offset=0x6)
     rootAddr = file.read('uint', address, offset=0x10)
     bones = [None] * numBones
-    rootBone = next(parseBones(file, rootAddr, bones, useDefaultPose))
+    rootBone = next(parseBones(file, rootAddr, bones, useDefaultPose, sceneSettings))
     return Skeleton(name, numBones, bones)
 
-def parseBones(file, address, bones, useDefaultPose=False):
+def parseBones(file, address, bones, useDefaultPose=False, sceneSettings=None):
     k = file.read('uint', address, offset=0)
     nameAddr = file.read('uint', address, offset=0x4)
     name = file.read('string', nameAddr)
@@ -409,6 +409,13 @@ def parseBones(file, address, bones, useDefaultPose=False):
     else:
         sca = Matrix.Identity(4)
         (sx, sy, sz) = (1, 1, 1)
+
+
+    sp = Vector((0.0, 0.0, 0.0))
+    st = Vector((0.0, 0.0, 0.0))
+    rp = Vector((0.0, 0.0, 0.0))
+    rt = Vector((0.0, 0.0, 0.0))
+    pivots = [sp, st, rp, rt]
     
     if k == 0x2:
         # bind pose rotation
@@ -428,6 +435,26 @@ def parseBones(file, address, bones, useDefaultPose=False):
             mat.append(row)
         mat.append([0.0, 0.0, 0.0, 1.0])
     else:
+        transPointer = file.read('uint', address, offset=0x18)
+        if transPointer:
+            print("MAYA MEME DETECTED IN ", name)
+            precomputed = sceneSettings['precomputedPivots']
+            file.seek(transPointer)
+            if precomputed:
+                length = 3
+                rt[0] = rt[1] = rt[2] = float('inf')
+            else:
+                length = 4 #len(pivots)
+
+            for i in range(length):
+                V = pivots[i]
+                for j in range(3):
+                    V[j] = file.read('float', 0, whence='current')
+            print("sp: ", sp)
+            print("st: ", st)
+            print("rp: ", rp)
+            print("rt: ", rt)
+
         mat = [[1.0, 0.0, 0.0, 0.0],
                [0.0, 1.0, 0.0, 0.0],
                [0.0, 0.0, 1.0, 0.0],
@@ -436,7 +463,7 @@ def parseBones(file, address, bones, useDefaultPose=False):
         orot = Matrix.Identity(4)
 
     mat = Matrix(mat)
-    bone = Bone(idx, name, (pos @ rot @ sca), mat, rot2, (rx, ry, rz), (sx, sy, sz), (x, y, z), flags)
+    bone = Bone(idx, name, k, pivots, (pos @ rot @ sca), mat, rot2, (rx, ry, rz), (sx, sy, sz), (x, y, z), flags)
     bone.type = k
     bone.idk1 = file.read('uint', address, offset=0x40)
     bone.idk2 = file.read('uint', address, offset=0x74)
@@ -448,7 +475,7 @@ def parseBones(file, address, bones, useDefaultPose=False):
     
     childAddr = file.read('uint', address, offset=0x24)
     if childAddr != 0:
-        for child in parseBones(file, childAddr, bones, useDefaultPose):
+        for child in parseBones(file, childAddr, bones, useDefaultPose, sceneSettings):
             bone.childIndices.append(child.index)
             child.parentIndex = idx
             
@@ -467,7 +494,7 @@ def parseBones(file, address, bones, useDefaultPose=False):
     
     nextAddr = file.read('uint', address, offset=0x28)
     if nextAddr != 0:
-        for sibling in parseBones(file, nextAddr, bones, useDefaultPose):
+        for sibling in parseBones(file, nextAddr, bones, useDefaultPose, sceneSettings):
             yield sibling
 
 def parseModel(path, useDefaultPose=False):
@@ -499,6 +526,12 @@ def parseModel(path, useDefaultPose=False):
         numTextures = file.read('ushort', 0x18)
         parseTextures(file, texturesListAddr, numTextures)
 
+        idk = file.read('uchar', 0x0)
+        idk1 = file.read('ushort', 0x2)
+        idk2 = file.read('uchar', 0x4)
+
+        sceneSettings = {'precomputedPivots': (idk < 1) or (idk1 < 3) or (idk2 == 0)}
+
         materialsListAddr = file.read('uint', 0x14)
         numMaterials = file.read('ushort', 0x1c)
         for i in range(numMaterials):
@@ -509,12 +542,18 @@ def parseModel(path, useDefaultPose=False):
             }
 
         skeletonHeaderAddr = file.read('uint', 0x8)
-        skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose)
+        skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose, sceneSettings)
         skeletons.append(skele)
     else:
         texturesListAddr = file.read('uint', 0xc)
         numTextures = file.read('ushort', 0x1a)
         parseTextures(file, texturesListAddr, numTextures)
+
+        idk = file.read('uchar', 0x0)
+        idk1 = file.read('ushort', 0x2)
+        idk2 = file.read('uchar', 0x4)
+
+        sceneSettings = {'precomputedPivots': (idk < 1) or (idk1 < 3) or (idk2 == 0)}
 
         materialsListAddr = file.read('uint', 0x14)
         numMaterials = file.read('ushort', 0x1e)
@@ -529,7 +568,7 @@ def parseModel(path, useDefaultPose=False):
         numSkeletons = file.read('ushort', 0x18)
         for i in range(numSkeletons):
             skeletonHeaderAddr = file.read('uint', skeletonsListAddrPtr + 4 * i)
-            skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose)
+            skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose, sceneSettings)
             skeletons.append(skele)
         
     
@@ -641,23 +680,6 @@ def makeAction(actionData, arma, skele):
 
         b = bpy.context.object.pose.bones[bone.name]
 
-        local = bone.localTransform
-        if b.parent:
-            relativeBind = b.parent.bone.matrix_local.inverted() @ b.bone.matrix_local
-        else:
-            relativeBind = b.bone.matrix_local
-
-        invRelativeBind = relativeBind.inverted()
-        jointOrientation = bone.bindRotation
-
-        # scale corrections for blender
-        s = bone.inverseBindMatrix.inverted().to_scale()
-        C_1 = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0))
-        
-        if b.parent:
-            s = bone.invparentBind.inverted().to_scale()
-            C_2 = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
-
         # temp components and static values
         temporaryComponents = {
             'location': ('t', bone.initialTrans),
@@ -721,8 +743,6 @@ def makeAction(actionData, arma, skele):
 
             i += 1
 
-        #continue
-
         sampleFrames = math.ceil(sampleFramerate * endTime)
 
         # add curves for non-animated channels to make next step simpler
@@ -742,47 +762,125 @@ def makeAction(actionData, arma, skele):
                 fcurve = action.fcurves.new(datapath, index=ax)
                 finalCurves[f'{c}{ax}'] = fcurve
 
-        # sample curves and calculate values corrected for the edit bone transformation
-        for i in range(sampleFrames):
-            frame = i * bpy.context.scene.render.fps / sampleFramerate
-            scale_x = Matrix.Scale(temporaryCurves['s0'].evaluate(frame), 4, [1.0,0.0,0.0])
-            scale_y = Matrix.Scale(temporaryCurves['s1'].evaluate(frame), 4, [0.0,1.0,0.0])
-            scale_z = Matrix.Scale(temporaryCurves['s2'].evaluate(frame), 4, [0.0,0.0,1.0])
-            rotation_x = Matrix.Rotation(temporaryCurves['r0'].evaluate(frame), 4, 'X')
-            rotation_y = Matrix.Rotation(temporaryCurves['r1'].evaluate(frame), 4, 'Y')
-            rotation_z = Matrix.Rotation(temporaryCurves['r2'].evaluate(frame), 4, 'Z')
-            translation = Matrix.Translation(Vector((temporaryCurves['t0'].evaluate(frame), 
-                                                     temporaryCurves['t1'].evaluate(frame), 
-                                                     temporaryCurves['t2'].evaluate(frame))))
-            
-            rotation = rotation_z @ rotation_y @ rotation_x
-            scale = scale_z @ scale_y @ scale_x
-            targetMtx = translation @ jointOrientation @ rotation @ scale
+        if bone.type == 2:
 
-            # blender scale corrections
-            targetMtx = targetMtx @ C_1
+            local = bone.localTransform
             if b.parent:
-                targetMtx = C_2 @ targetMtx
+                relativeBind = b.parent.bone.matrix_local.inverted() @ b.bone.matrix_local
+            else:
+                relativeBind = b.bone.matrix_local
 
-            correctedMatrix = invRelativeBind @ targetMtx
+            invRelativeBind = relativeBind.inverted()
+            jointOrientation = bone.bindRotation
 
-            trans, rot, scale = correctedMatrix.decompose()
-            rot = rot.to_euler()
-            finalCurves['s0'].keyframe_points.insert(frame, scale[0]).interpolation = 'CONSTANT'
-            finalCurves['s1'].keyframe_points.insert(frame, scale[1]).interpolation = 'CONSTANT'
-            finalCurves['s2'].keyframe_points.insert(frame, scale[2]).interpolation = 'CONSTANT'
-            finalCurves['r0'].keyframe_points.insert(frame, rot[0]).interpolation = 'CONSTANT'
-            finalCurves['r1'].keyframe_points.insert(frame, rot[1]).interpolation = 'CONSTANT'
-            finalCurves['r2'].keyframe_points.insert(frame, rot[2]).interpolation = 'CONSTANT'
-            finalCurves['t0'].keyframe_points.insert(frame, trans[0]).interpolation = 'CONSTANT'
-            finalCurves['t1'].keyframe_points.insert(frame, trans[1]).interpolation = 'CONSTANT'
-            finalCurves['t2'].keyframe_points.insert(frame, trans[2]).interpolation = 'CONSTANT'
+            # scale corrections for blender
+            s = bone.inverseBindMatrix.inverted().to_scale()
+            C_1 = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0))
+            
+            if b.parent:
+                s = bone.invparentBind.inverted().to_scale()
+                C_2 = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
 
+            #continue
+
+            
+            # sample curves and calculate values corrected for the edit bone transformation
+            for i in range(sampleFrames):
+                frame = i * bpy.context.scene.render.fps / sampleFramerate
+                scale_x = Matrix.Scale(temporaryCurves['s0'].evaluate(frame), 4, [1.0,0.0,0.0])
+                scale_y = Matrix.Scale(temporaryCurves['s1'].evaluate(frame), 4, [0.0,1.0,0.0])
+                scale_z = Matrix.Scale(temporaryCurves['s2'].evaluate(frame), 4, [0.0,0.0,1.0])
+                rotation_x = Matrix.Rotation(temporaryCurves['r0'].evaluate(frame), 4, 'X')
+                rotation_y = Matrix.Rotation(temporaryCurves['r1'].evaluate(frame), 4, 'Y')
+                rotation_z = Matrix.Rotation(temporaryCurves['r2'].evaluate(frame), 4, 'Z')
+                translation = Matrix.Translation(Vector((temporaryCurves['t0'].evaluate(frame), 
+                                                        temporaryCurves['t1'].evaluate(frame), 
+                                                        temporaryCurves['t2'].evaluate(frame))))
+                
+                rotation = rotation_z @ rotation_y @ rotation_x
+                scale = scale_z @ scale_y @ scale_x
+                targetMtx = translation @ jointOrientation @ rotation @ scale
+
+                # blender scale corrections
+                targetMtx = targetMtx @ C_1
+                if b.parent:
+                    targetMtx = C_2 @ targetMtx
+
+                correctedMatrix = invRelativeBind @ targetMtx
+
+                trans, rot, scale = correctedMatrix.decompose()
+                rot = rot.to_euler()
+                finalCurves['s0'].keyframe_points.insert(frame, scale[0]).interpolation = 'CONSTANT'
+                finalCurves['s1'].keyframe_points.insert(frame, scale[1]).interpolation = 'CONSTANT'
+                finalCurves['s2'].keyframe_points.insert(frame, scale[2]).interpolation = 'CONSTANT'
+                finalCurves['r0'].keyframe_points.insert(frame, rot[0]).interpolation = 'CONSTANT'
+                finalCurves['r1'].keyframe_points.insert(frame, rot[1]).interpolation = 'CONSTANT'
+                finalCurves['r2'].keyframe_points.insert(frame, rot[2]).interpolation = 'CONSTANT'
+                finalCurves['t0'].keyframe_points.insert(frame, trans[0]).interpolation = 'CONSTANT'
+                finalCurves['t1'].keyframe_points.insert(frame, trans[1]).interpolation = 'CONSTANT'
+                finalCurves['t2'].keyframe_points.insert(frame, trans[2]).interpolation = 'CONSTANT'
+
+
+            
+
+        elif (bone.type == 0 or bone.type == 3 or bone.type == 5 or bone.type == 6 or bone.type == 7):
+            # GSnull, GSmodel, GSlight, GSvolume, GSparticle
+
+            # time for maya memes
+            precomputed = (bone.RotationPivotTranslate[0] == float('inf') 
+                        or bone.RotationPivotTranslate[1] == float('inf')
+                        or bone.RotationPivotTranslate[2] == float('inf'))
+            if precomputed:
+                T_1 = bone.ScalePivot
+                T_2 = bone.ScalePivotTranslate
+                T_3 = bone.RotatePivot
+            else:
+                T_1 = -bone.ScalePivot
+                T_2 = bone.ScalePivot + bone.ScalePivotTranslate - bone.RotatePivot
+                T_3 = bone.RotatePivot + bone.RotationPivotTranslate
+
+            T_1 = Matrix.Translation(T_1)
+            T_2 = Matrix.Translation(T_2)
+            T_3 = Matrix.Translation(T_3)
+
+            for i in range(sampleFrames):
+                frame = i * bpy.context.scene.render.fps / sampleFramerate
+                scale_x = Matrix.Scale(temporaryCurves['s0'].evaluate(frame), 4, [1.0,0.0,0.0])
+                scale_y = Matrix.Scale(temporaryCurves['s1'].evaluate(frame), 4, [0.0,1.0,0.0])
+                scale_z = Matrix.Scale(temporaryCurves['s2'].evaluate(frame), 4, [0.0,0.0,1.0])
+                rotation_x = Matrix.Rotation(temporaryCurves['r0'].evaluate(frame), 4, 'X')
+                rotation_y = Matrix.Rotation(temporaryCurves['r1'].evaluate(frame), 4, 'Y')
+                rotation_z = Matrix.Rotation(temporaryCurves['r2'].evaluate(frame), 4, 'Z')
+                translation = Matrix.Translation(Vector((temporaryCurves['t0'].evaluate(frame), 
+                                                        temporaryCurves['t1'].evaluate(frame), 
+                                                        temporaryCurves['t2'].evaluate(frame))))
+                
+                rotation = rotation_z @ rotation_y @ rotation_x
+                scale = scale_z @ scale_y @ scale_x
+                targetMtx = translation @ T_3 @ rotation @ T_2 @ scale @ T_1
+
+                trans, rot, scale = targetMtx.decompose()
+                rot = rot.to_euler()
+                finalCurves['s0'].keyframe_points.insert(frame, scale[0]).interpolation = 'CONSTANT'
+                finalCurves['s1'].keyframe_points.insert(frame, scale[1]).interpolation = 'CONSTANT'
+                finalCurves['s2'].keyframe_points.insert(frame, scale[2]).interpolation = 'CONSTANT'
+                finalCurves['r0'].keyframe_points.insert(frame, rot[0]).interpolation = 'CONSTANT'
+                finalCurves['r1'].keyframe_points.insert(frame, rot[1]).interpolation = 'CONSTANT'
+                finalCurves['r2'].keyframe_points.insert(frame, rot[2]).interpolation = 'CONSTANT'
+                finalCurves['t0'].keyframe_points.insert(frame, trans[0]).interpolation = 'CONSTANT'
+                finalCurves['t1'].keyframe_points.insert(frame, trans[1]).interpolation = 'CONSTANT'
+                finalCurves['t2'].keyframe_points.insert(frame, trans[2]).interpolation = 'CONSTANT'
+
+        elif bone.type == 1:
+            print("What the fuck is node type 1?")
+        else:
+            # TODO: camera
+            print("Camera animations are currently not implemented")
 
         # remove temporary curves
         for fcurve in temporaryCurves.values():
             action.fcurves.remove(fcurve)
-            
+        
             
 
 def makeObject(context, meshData, partData, material, bones, meshBone):

@@ -45,9 +45,15 @@ class MeshPart:
         self.materialIndex = matID
 
 class Bone:
-    def __init__(self, i, name, trans, mat, brot, rot, sca, pos, flags):
+    def __init__(self, i, name, type, pivots, trans, mat, brot, rot, sca, pos, flags):
         self.index = i
         self.name = name
+        self.type = type
+
+        self.ScalePivot = pivots[0]
+        self.ScalePivotTranslate = pivots[1]
+        self.RotatePivot = pivots[2]
+        self.RotationPivotTranslate = pivots[3]
 
         self.inverseBindMatrix = mat
         
