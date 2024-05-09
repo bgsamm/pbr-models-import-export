@@ -781,7 +781,7 @@ def makeAction(actionData, arma, skele):
             
             
 
-def makeObject(context, meshData, partData, material, bones):
+def makeObject(context, meshData, partData, material, bones, meshBone):
     m = makeMesh(meshData, partData, bones)
     o = bpy.data.objects.new('mesh', m)
     context.collection.objects.link(o)
@@ -797,6 +797,13 @@ def makeObject(context, meshData, partData, material, bones):
                 if name not in o.vertex_groups:
                     o.vertex_groups.new(name=name)
                 o.vertex_groups[name].add([i], w, 'REPLACE')
+    else:
+        # rigid skin
+        name = meshBone.name
+        for i in range(len(meshData.vertices)):
+            if name not in o.vertex_groups:
+                o.vertex_groups.new(name=name)
+            o.vertex_groups[name].add([i], 1.0, 'REPLACE')
     return o
 
 def makeArmature_r(edit_bones, bones, boneIndex):
@@ -897,7 +904,7 @@ def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
                 bpy.ops.object.select_all(action='DESELECT')
                 for part in mesh.parts:
                     mat = materials[part.materialIndex]
-                    obj = makeObject(context, mesh, part, mat, skele.bones)
+                    obj = makeObject(context, mesh, part, mat, skele.bones, bone)
                     obj.name = bone.name
                     obj.select_set(True)
                     parts.append(obj)
