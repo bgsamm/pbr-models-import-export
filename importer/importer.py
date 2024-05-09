@@ -366,6 +366,14 @@ def parseBones(file, address, bones, useDefaultPose=False):
     idx = file.read('ushort', address, offset=0x8)
     flags = file.read('ushort', address, offset=0xA)
 
+    i = 1
+    blenderName = name
+    boneNames = [bone.name for bone in bones if bone]
+    while blenderName in boneNames:
+        blenderName = f'{name}.{i:03d}'
+        i += 1
+    name = blenderName
+
     pos = Matrix.Identity(4)
     posAddr = file.read('uint', address, offset=0xc)
     if posAddr != 0:
@@ -813,6 +821,9 @@ def makeArmature(context, skele):
     bpy.ops.object.mode_set(mode='OBJECT')
     for bone in skele.bones:
         b = arma.pose.bones[bone.name]
+
+        if b.name != bone.name:
+            print("DUPLICATE BONE NAME: ", b.name, " ", bone.name)
 
         local = bone.localTransform
         if b.parent:
