@@ -1,5 +1,5 @@
 import os, math, struct
-from mathutils import Euler, Matrix, Vector
+from mathutils import Euler, Matrix, Vector, Quaternion
 
 import bpy, bmesh
 
@@ -118,6 +118,27 @@ def parseActions(file, address, numActions):
         anim_dict[i] = {'name': name,
                         'bones': {}}
 
+# these are the types used in the game code as far as I can tell
+keyframeDataTypes = {
+    0 : 'float',
+    2 : 'quat',
+    5 : 'uchar',
+    6 : 'char',
+    7 : 'ushort',
+    8 : 'short', 
+}
+# for vector quantities, component 0 implies 3 component float and 4, 5, 6 imply 2 component float values
+
+# these data types are suggested by some setup code
+# they could correspond to the types implied by certain components
+unknownKeyFrameDataTypes = {
+    1 : 'unknown 1',
+    3 : 'unknown 3',
+    4 : 'unknown 4',
+    10 : 'unknown 10',
+    11 : 'unknown 11',
+}
+
 def parseFCurves(file, address, boneName):
     nextAddr = address
     while nextAddr != 0:
@@ -129,8 +150,21 @@ def parseFCurves(file, address, boneName):
         for i in range(numFCurves):
             fcurveAddr = fcurveListAddr + i * 0x10
             axis = file.read('uchar', fcurveAddr, offset=0x2)
+            if axis == 0:
+                # implies vec3 values
+                dataType = 'vec3'
+            elif (axis == 4 or axis == 5 or axis == 6):
+                # the actual ingame implementation of this looks broken so I don't expect it to be used outside of texture animation which uses different code
+                print('vec2 animation found in 3d anim')
+
             compIndex = file.read('uchar', fcurveAddr, offset=0x1)
             dataType = file.read('uchar', fcurveAddr, offset=0x6)
+            if dataType in keyframeDataTypes:
+                dataType = keyframeDataTypes[dataType]
+            elif dataType in unknownKeyFrameDataTypes:
+                print('found one of the expected but undocumented data types: ', dataType)
+            else:
+                print('completely undocumented data type: ', dataType)
             channelIndex = file.read('uchar', fcurveAddr, offset=0x3)
             unkIndex = file.read('uchar', fcurveAddr, offset=0x4)
             idk = file.read('uchar', fcurveAddr, offset=0x0)
@@ -140,8 +174,11 @@ def parseFCurves(file, address, boneName):
             component = ['location', 'rotation_euler', 'scale'][compIndex]
             print('data type: ', dataType, ' target type: ', compIndex, ' component: ', axis, ' channel: ', channelIndex, ' unk: ', unkIndex, ' idk: ', idk)
             exp = file.read('uchar', fcurveAddr, offset=0x7)
+            if dataType == 'float' or dataType == 'quat' or dataType == 'vec3' or dataType == 'vec2':
+                # float values, no scaling required
+                exp = 0.0
             keyframeAddr = file.read('uint', fcurveAddr, offset=0x8)
-            keyframes = parseKeyframes(file, keyframeAddr, exp)
+            keyframes = parseKeyframes(file, keyframeAddr, exp, dataType)
             if len(keyframes) == 0:
                 continue
             fcurve = {'axis': axis,
@@ -150,7 +187,7 @@ def parseFCurves(file, address, boneName):
             anim_dict[actionIndex]['bones'][boneName].append(fcurve)
         nextAddr = file.read('uint', nextAddr, offset=0xc)
 
-def parseKeyframes(file, address, scale_exp):
+def parseKeyframes(file, address, scale_exp, dataType):
     valsAddr = file.read('uint', address, offset=0)
     derivsAddr = file.read('uint', address, offset=0x4)
     valueCount = file.read('ushort', address, offset=0x8)
@@ -165,12 +202,18 @@ def parseKeyframes(file, address, scale_exp):
             if interpIndex != 2 and interpIndex != 0:
                 print('interpIndex: ', interpIndex)
             valueIndex = file.read('ushort', keyframeAddr, offset=0x2)
-            value = file.read('short', valsAddr, offset=(2 * valueIndex))
+            value = readKeyframeValue(file, dataType, valsAddr, valueIndex)
             if derivsAddr > 0:
-                derivLIndex = file.read('ushort', keyframeAddr, offset=0x4)
-                derivLeft = file.read('float', derivsAddr, offset=(4 * derivLIndex))
-                derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
-                derivRight = file.read('float', derivsAddr, offset=(4 * derivRIndex))
+                if dataType == 'quat' or dataType == 'vec3' or dataType == 'vec2':
+                    derivLIndex = file.read('ushort', keyframeAddr, offset=0x4)
+                    derivLeft = readKeyframeValue(file, dataType, derivsAddr, derivLIndex)
+                    derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
+                    derivRight = readKeyframeValue(file, dataType, derivsAddr, derivRIndex)
+                else:
+                    derivLIndex = file.read('ushort', keyframeAddr, offset=0x4)
+                    derivLeft = file.read('float', derivsAddr, offset=(4 * derivLIndex))
+                    derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
+                    derivRight = file.read('float', derivsAddr, offset=(4 * derivRIndex))
             else:
                 derivLeft = 0.0
                 derivRight = 0.0
@@ -187,7 +230,7 @@ def parseKeyframes(file, address, scale_exp):
         framerate = file.read('ushort', address, offset=0x16) & 0xFF
         print("valueCount: ", valueCount)
         for i in range(valueCount):
-            value = file.read('short', valsAddr, offset=(2 * i))
+            value = readKeyframeValue(file, dataType, valsAddr, i)
             time = (0.5 + (i - 1)) / framerate
             keyframe = {'value': value / (2 ** scale_exp),
                         'derivativeL': 0.0,
@@ -196,6 +239,27 @@ def parseKeyframes(file, address, scale_exp):
                         'time': time}
             keyframes.append(keyframe)
     return keyframes
+
+def readKeyframeValue(file, type, baseAdress, index):
+
+    if BinaryReader.is_primitive(type):
+        size = BinaryReader.primitive_size(type)
+        return file.read(type, baseAdress, offset=(size * index))
+    elif type == 'quat' or type == 'vec3' or type == 'vec2':
+        # multicomponent stuff needs to be handled separately
+        size = 4
+        if type == 'vec2':
+            n = 2
+            return Vector([file.read(type, baseAdress, offset=(size * (index * n + i))) for i in range(n)])
+        elif type == 'vec3':
+            n = 3
+            return Vector([file.read(type, baseAdress, offset=(size * (index * n + i))) for i in range(n)])
+        elif type == 'quat':
+            n = 4
+            return Quaternion([file.read(type, baseAdress, offset=(size * (index * n + i))) for i in range(n)])
+    else:
+        print('unknown data type: ', type)
+        return None
 
 def parseWeights(file, address):
     weights = []
