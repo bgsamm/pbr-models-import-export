@@ -45,7 +45,7 @@ class MeshPart:
         self.materialIndex = matID
 
 class Bone:
-    def __init__(self, i, name, type, pivots, trans, mat, brot, rot, sca, pos, flags):
+    def __init__(self, i, name, type, pivots, trans, mat, brot, rot, sca, pos, nodeFlags, boneFlags):
         self.index = i
         self.name = name
         self.type = type
@@ -61,7 +61,8 @@ class Bone:
         self.initialScale = sca
         self.initialTrans = pos
         self.bindRotation = brot
-        self.flags = flags
+        self.nodeFlags = nodeFlags
+        self.boneFlags = boneFlags
 
         self.parentRelativeBind = None
         

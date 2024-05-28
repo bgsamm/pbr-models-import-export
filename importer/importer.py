@@ -364,7 +364,13 @@ def parseBones(file, address, bones, useDefaultPose=False, sceneSettings=None):
     nameAddr = file.read('uint', address, offset=0x4)
     name = file.read('string', nameAddr)
     idx = file.read('ushort', address, offset=0x8)
-    flags = file.read('ushort', address, offset=0xA)
+    nodeFlags = file.read('ushort', address, offset=0xA)
+
+    if k == 2:
+        boneFlags = file.read('uint', address, offset=0x30)
+    else:
+        boneFlags = 0
+    
 
     i = 1
     blenderName = name
@@ -463,7 +469,7 @@ def parseBones(file, address, bones, useDefaultPose=False, sceneSettings=None):
         orot = Matrix.Identity(4)
 
     mat = Matrix(mat)
-    bone = Bone(idx, name, k, pivots, (pos @ rot @ sca), mat, rot2, (rx, ry, rz), (sx, sy, sz), (x, y, z), flags)
+    bone = Bone(idx, name, k, pivots, (pos @ rot @ sca), mat, rot2, (rx, ry, rz), (sx, sy, sz), (x, y, z), nodeFlags, boneFlags)
     bone.type = k
     bone.idk1 = file.read('uint', address, offset=0x40)
     bone.idk2 = file.read('uint', address, offset=0x74)
@@ -931,6 +937,13 @@ def makeArmature(context, skele):
     for bone in skele.bones:
         b = arma.pose.bones[bone.name]
 
+        # another maya meme: scale compensation
+        if b.parent:
+            isBone = bone.type == 2
+            dontInheritScale = isBone and (bone.nodeFlags >> 3) & 1 and (bone.boneFlags & 8)
+            if dontInheritScale:
+                b.bone.inherit_scale = 'NONE_LEGACY'
+
         if b.name != bone.name:
             print("DUPLICATE BONE NAME: ", b.name, " ", bone.name)
 
@@ -952,7 +965,7 @@ def makeArmature(context, skele):
 
         b.matrix_basis = relativeBind.inverted() @ local
         b["type"] = bone.type
-        b["flag"] = "{0:b}".format(bone.flags)
+        b["flag"] = "{0:b}".format(bone.nodeFlags)
         b["idk1"] = hex(bone.idk1)
         b["idk2"] = hex(bone.idk2)
     
