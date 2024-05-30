@@ -199,8 +199,6 @@ def parseKeyframes(file, address, scale_exp, dataType):
             keyframeAddr = keyframesAddr + i * 0xc
             interpIndex = file.read('ushort', keyframeAddr)
             interpolation = ['CONSTANT', 'LINEAR', 'BEZIER'][interpIndex]
-            if interpIndex != 2 and interpIndex != 0:
-                print('interpIndex: ', interpIndex)
             valueIndex = file.read('ushort', keyframeAddr, offset=0x2)
             value = readKeyframeValue(file, dataType, valsAddr, valueIndex)
             if derivsAddr > 0:
@@ -215,6 +213,7 @@ def parseKeyframes(file, address, scale_exp, dataType):
                     derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
                     derivRight = file.read('float', derivsAddr, offset=(4 * derivRIndex))
             else:
+                print('derivative data not present even though it should be ...')
                 derivLeft = 0.0
                 derivRight = 0.0
             time = file.read('float', keyframeAddr, offset=0x8)
@@ -762,7 +761,7 @@ def makeAction(actionData, arma, skele):
         endTime = 0 
         temporaryCurves = {}
         for fcurveData in actionData['bones'][boneName]:
-            tempComponent = temporaryComponents[fcurveData['component']][0]
+            tempComponent = fcurveData['component']#temporaryComponents[fcurveData['component']][0]
             axis = fcurveData['axis'] - 1
             tempDatapath = f'pose.bones["{boneName}"].{tempComponent}'
             existingCurve = action.fcurves.find(tempDatapath, index = axis)
@@ -773,9 +772,14 @@ def makeAction(actionData, arma, skele):
 
             duplicateFrames = []
 
+            if boneName == 'hips' and fcurveData['component'] == 'rotation_euler':
+                print(actionData['name'], 'rot axis: ', fcurveData['axis'] - 1)
+
             for i, keyframe in enumerate(fcurveData['keyframes']):
                 endTime = max(endTime, keyframe['time'])
                 frame = keyframe['time'] * bpy.context.scene.render.fps
+                if boneName == 'hips' and fcurveData['component'] == 'rotation_euler':
+                    print(i, keyframe['time'], frame, keyframe['value'], keyframe['derivativeL'], keyframe['derivativeR'])
                 oldKeyframeCount = len(fcurve.keyframe_points)
                 kframe = fcurve.keyframe_points.insert(frame, keyframe['value'])
                 newKeyframeCount = len(fcurve.keyframe_points)
@@ -794,6 +798,7 @@ def makeAction(actionData, arma, skele):
             for keyframe in fcurveData['keyframes']:
 
                 if i in duplicateFrames:
+                    i += 1
                     continue
 
                 kx = keyframes[i].co[0]
@@ -802,16 +807,19 @@ def makeAction(actionData, arma, skele):
                     dtL = keyframes[i].co[0] - keyframes[i - 1].co[0]
                     dxL = keyframe['derivativeL']
                     keyframes[i].handle_left[0] = kx - dtL / 3
-                    keyframes[i].handle_left[1] = ky - dxL * (fcurveData['keyframes'][i]['time'] - fcurveData['keyframes'][i - 1]['time']) / 3
+                    keyframes[i].handle_left[1] = ky - dxL / 3
                     
 
                 if i < len(fcurveData['keyframes']) - 1:
                     dtR = keyframes[i + 1].co[0] - keyframes[i].co[0]
                     dxR = keyframe['derivativeR']
                     keyframes[i].handle_right[0] = kx + dtR / 3
-                    keyframes[i].handle_right[1] = ky + dxR * (fcurveData['keyframes'][i + 1]['time'] - fcurveData['keyframes'][i]['time']) / 3
+                    keyframes[i].handle_right[1] = ky + dxR / 3
 
-            i += 1
+
+                i += 1
+
+        continue
 
         sampleFrames = math.ceil(sampleFramerate * endTime)
 
@@ -850,9 +858,6 @@ def makeAction(actionData, arma, skele):
             if b.parent:
                 s = bone.invparentBind.inverted().to_scale()
                 C_2 = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
-
-            #continue
-
             
             # sample curves and calculate values corrected for the edit bone transformation
             for i in range(sampleFrames):
