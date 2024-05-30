@@ -902,6 +902,14 @@ def makeAction(actionData, arma, skele):
             T_2 = Matrix.Translation(T_2)
             T_3 = Matrix.Translation(T_3)
 
+            local = bone.localTransform
+            if b.parent:
+                relativeBind = b.parent.bone.matrix_local.inverted() @ b.bone.matrix_local
+            else:
+                relativeBind = b.bone.matrix_local
+
+            invRelativeBind = relativeBind.inverted()
+
             for i in range(sampleFrames):
                 frame = i * bpy.context.scene.render.fps / sampleFramerate
                 scale_x = Matrix.Scale(temporaryCurves['s0'].evaluate(frame), 4, [1.0,0.0,0.0])
@@ -918,7 +926,9 @@ def makeAction(actionData, arma, skele):
                 scale = scale_z @ scale_y @ scale_x
                 targetMtx = translation @ T_3 @ rotation @ T_2 @ scale @ T_1
 
-                trans, rot, scale = targetMtx.decompose()
+                correctedMatrix = invRelativeBind @ targetMtx
+
+                trans, rot, scale = correctedMatrix.decompose()
                 rot = rot.to_euler()
                 finalCurves['s0'].keyframe_points.insert(frame, scale[0]).interpolation = 'CONSTANT'
                 finalCurves['s1'].keyframe_points.insert(frame, scale[1]).interpolation = 'CONSTANT'
