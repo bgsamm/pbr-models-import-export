@@ -146,7 +146,6 @@ def parseFCurves(file, address, boneName):
         numFCurves = file.read('ushort', nextAddr, offset=0x2)
         fcurveListAddr = file.read('uint', nextAddr, offset=0x4)
         anim_dict[actionIndex]['bones'][boneName] = []
-        print('bone: ', boneName)
         for i in range(numFCurves):
             fcurveAddr = fcurveListAddr + i * 0x10
             axis = file.read('uchar', fcurveAddr, offset=0x2)
@@ -155,7 +154,7 @@ def parseFCurves(file, address, boneName):
                 dataType = 'vec3'
             elif (axis == 4 or axis == 5 or axis == 6):
                 # the actual ingame implementation of this looks broken so I don't expect it to be used outside of texture animation which uses different code
-                print('vec2 animation found in 3d anim')
+                print('vec2 animation found in 3d anim: ', boneName)
 
             compIndex = file.read('uchar', fcurveAddr, offset=0x1)
             dataType = file.read('uchar', fcurveAddr, offset=0x6)
@@ -172,7 +171,6 @@ def parseFCurves(file, address, boneName):
                 print(f'Unknown component type: {compIndex} ({boneName}, {hex(fcurveAddr)})')
                 continue
             component = ['location', 'rotation_euler', 'scale'][compIndex]
-            print('data type: ', dataType, ' target type: ', compIndex, ' component: ', axis, ' channel: ', channelIndex, ' unk: ', unkIndex, ' idk: ', idk)
             exp = file.read('uchar', fcurveAddr, offset=0x7)
             if dataType == 'float' or dataType == 'quat' or dataType == 'vec3' or dataType == 'vec2':
                 # float values, no scaling required
@@ -227,7 +225,6 @@ def parseKeyframes(file, address, scale_exp, dataType):
         # "keyframe" animation. stores data for each individual frame
         # probably used for baked data, such as animation data from constraints and IK
         framerate = file.read('ushort', address, offset=0x16) & 0xFF
-        print("valueCount: ", valueCount)
         for i in range(valueCount):
             value = readKeyframeValue(file, dataType, valsAddr, i)
             time = (0.5 + (i - 1)) / framerate
@@ -519,10 +516,6 @@ def parseBones(file, address, bones, useDefaultPose=False, sceneSettings=None):
                 V = pivots[i]
                 for j in range(3):
                     V[j] = file.read('float', 0, whence='current')
-            print("sp: ", sp)
-            print("st: ", st)
-            print("rp: ", rp)
-            print("rt: ", rt)
 
         mat = [[1.0, 0.0, 0.0, 0.0],
                [0.0, 1.0, 0.0, 0.0],
@@ -761,7 +754,7 @@ def makeAction(actionData, arma, skele):
         endTime = 0 
         temporaryCurves = {}
         for fcurveData in actionData['bones'][boneName]:
-            tempComponent = fcurveData['component']#temporaryComponents[fcurveData['component']][0]
+            tempComponent = temporaryComponents[fcurveData['component']][0]
             axis = fcurveData['axis'] - 1
             tempDatapath = f'pose.bones["{boneName}"].{tempComponent}'
             existingCurve = action.fcurves.find(tempDatapath, index = axis)
@@ -772,14 +765,9 @@ def makeAction(actionData, arma, skele):
 
             duplicateFrames = []
 
-            if boneName == 'hips' and fcurveData['component'] == 'rotation_euler':
-                print(actionData['name'], 'rot axis: ', fcurveData['axis'] - 1)
-
             for i, keyframe in enumerate(fcurveData['keyframes']):
                 endTime = max(endTime, keyframe['time'])
                 frame = keyframe['time'] * bpy.context.scene.render.fps
-                if boneName == 'hips' and fcurveData['component'] == 'rotation_euler':
-                    print(i, keyframe['time'], frame, keyframe['value'], keyframe['derivativeL'], keyframe['derivativeR'])
                 oldKeyframeCount = len(fcurve.keyframe_points)
                 kframe = fcurve.keyframe_points.insert(frame, keyframe['value'])
                 newKeyframeCount = len(fcurve.keyframe_points)
@@ -790,8 +778,6 @@ def makeAction(actionData, arma, skele):
                     duplicateFrames.append(i)
             
             keyframes = fcurve.keyframe_points[:]
-
-            print('keyframes: ', len(keyframes), ' data length: ', len(fcurveData['keyframes']))
 
             i = 0
 
@@ -818,8 +804,6 @@ def makeAction(actionData, arma, skele):
 
 
                 i += 1
-
-        continue
 
         sampleFrames = math.ceil(sampleFramerate * endTime)
 
