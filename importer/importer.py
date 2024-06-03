@@ -795,7 +795,7 @@ def makeAction(actionData, arma, skele):
                     keyframes[i].handle_left[1] = ky - dxL / 3
                     
 
-                if i < len(fcurveData['keyframes']) - 1:
+                if i < len(keyframes) - 1:
                     dtR = keyframes[i + 1].co[0] - keyframes[i].co[0]
                     dxR = keyframe['derivativeR']
                     keyframes[i].handle_right[0] = kx + dtR / 3
