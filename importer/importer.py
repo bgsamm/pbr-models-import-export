@@ -781,10 +781,9 @@ def makeAction(actionData, arma, skele):
 
             i = 0
 
-            for keyframe in fcurveData['keyframes']:
+            for j, keyframe in enumerate(fcurveData['keyframes']):
 
-                if i in duplicateFrames:
-                    i += 1
+                if j in duplicateFrames:
                     continue
 
                 kx = keyframes[i].co[0]
