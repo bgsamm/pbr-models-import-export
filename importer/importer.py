@@ -9,7 +9,9 @@ from ..shared.const import *
 from ..shared.file_io import BinaryReader
 
 encodings = {
-        #0x30: ???
+        0x00: 'C4',
+        0x01: 'C8',
+        0x30: 'C14X2',
         0x40: 'I4',
         0x41: 'IA4',
         0x42: 'I8',
@@ -18,6 +20,13 @@ encodings = {
         0x45: 'RGBA32',
         0x90: 'RGB5A3',
         0xB0: 'CMPR',
+    }
+
+palEncodings = {
+        0x0: 'UNUSED',
+        0x1: 'IA8', 
+        0x2: 'RGB565',
+        0x3: 'RGB5A3',
     }
 
 mesh_dict = {}
@@ -67,11 +76,15 @@ def decompressImage(file, texAddress, imageAddr):
     width = file.read('ushort', texAddress, offset=0)
     height = file.read('ushort', texAddress, offset=0x2)
     encoding = file.read('uint', texAddress, offset=0x8)
+    palEncoding = file.read('uint', texAddress, offset=0xC)
+    palAddr = file.read('uint', texAddress, offset=0x48)
     size = file.read('uint', texAddress, offset=0x4c)
     compressedData = file.read_chunk(imageAddr, size)
     imageData = gtx.decompress(compressedData,
                                width, height,
-                               encodings[encoding])
+                               encodings[encoding],
+                               palEncodings[palEncoding],
+                               palAddr - imageAddr)
     image = Image(imageData, width, height)
     return image
 

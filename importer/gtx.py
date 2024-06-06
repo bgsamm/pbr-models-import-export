@@ -25,14 +25,48 @@ def bytesToRGB5A3(b1, b2):
 
 def interpolate(v1, v2, weight):
     return [int(a * (1 - weight) + b * weight) for a, b in zip(v1, v2)]
+
+def generateTLUT(byte_arr, maxPaletteSize, palEncoding):
+    colors = []
+    paletteSize = min(maxPaletteSize, len(byte_arr) // 2)
+    if palEncoding == 'IA8':
+        for i in range(paletteSize):
+            b = byte_arr[i * 2 : (i + 1) * 2]
+            colors.append([b[1]]*3 + [b[0]])
+    elif palEncoding == 'RGB565':
+        for i in range(paletteSize):
+            b = byte_arr[i * 2 : (i + 1) * 2]
+            colors.append(bytesToRGB565(*b))
+    elif palEncoding == 'RGB5A3':
+        for i in range(paletteSize):
+            b = byte_arr[i * 2 : (i + 1) * 2]
+            colors.append(bytesToRGB5A3(*b))
+    return colors
     
-def parseImageData(byte_arr, img_width, img_height, encoding):
+def parseImageData(byte_arr, img_width, img_height, encoding, palEncoding, palOffset):
     if encoding == 'RGBA32':
         return parseRGBA32Data(byte_arr, img_width, img_height)
     elif encoding == 'CMPR':
         return parseCMPRData(byte_arr, img_width, img_height)
     
-    if encoding == 'I4':
+    if encoding in ['C4', 'C8', 'C14X2']:
+        if encoding == 'C4': # 4 bit indices
+            maxPaletteSize = 0x10
+            img_width /= 2
+            block_width = 4
+            block_height = 8
+            px_sz = 1
+        elif encoding == 'C8': # 8 bit indices
+            maxPaletteSize = 0x100
+            block_width = 8
+            block_height = 4
+            px_sz = 1
+        elif encoding == 'C14X2': # 10 bit indices
+            maxPaletteSize = 0x400
+            block_width = block_height = 4
+            px_sz = 2
+        tlut = generateTLUT(byte_arr[palOffset:], maxPaletteSize, palEncoding)
+    elif encoding == 'I4':
         img_width /= 2
         block_width = 4
         block_height = 8
@@ -78,6 +112,17 @@ def parseImageData(byte_arr, img_width, img_height, encoding):
                         rgba += bytesToRGB565(*b)
                     elif encoding == 'RGB5A3':
                         rgba += bytesToRGB5A3(*b)
+                    elif encoding == 'C4':
+                        idx1 = (b[0] & 0xF0) >> 4
+                        idx2 = b[0] & 0xF
+                        rgba += tlut[idx1]
+                        rgba += tlut[idx2]
+                    elif encoding == 'C8':
+                        idx = b[0]
+                        rgba += tlut[idx]
+                    elif encoding == 'C14X2':
+                        idx = ((b[0] << 8) | b[1]) & 0x4FFF
+                        rgba += tlut[idx]
     return rgba
 
 def parseRGBA32Data(byte_arr, img_width, img_height):
@@ -141,7 +186,7 @@ def parseCMPRData(byte_arr, img_width, img_height):
                             rgba += colors[index]
     return rgba                  
     
-def decompress(byte_arr, img_width, img_height, encoding):
-    rgba = parseImageData(byte_arr, img_width, img_height, encoding)
+def decompress(byte_arr, img_width, img_height, encoding, palEncoding, palOffset):
+    rgba = parseImageData(byte_arr, img_width, img_height, encoding, palEncoding, palOffset)
     #assert len(rgba) / 4 == img_width * img_height
     return rgba
