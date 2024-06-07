@@ -1,15 +1,17 @@
 import os, math, struct
-from mathutils import Euler, Matrix, Vector
+from mathutils import Euler, Matrix, Vector, Quaternion
 
 import bpy, bmesh
 
-from ..shared import gtx
-from ..shared.classes import *
+from . import gtx
+from .classes import *
 from ..shared.const import *
 from ..shared.file_io import BinaryReader
 
 encodings = {
-        #0x30: ???
+        0x00: 'C4',
+        0x01: 'C8',
+        0x30: 'C14X2',
         0x40: 'I4',
         0x41: 'IA4',
         0x42: 'I8',
@@ -18,6 +20,13 @@ encodings = {
         0x45: 'RGBA32',
         0x90: 'RGB5A3',
         0xB0: 'CMPR',
+    }
+
+palEncodings = {
+        0x0: 'UNUSED',
+        0x1: 'IA8', 
+        0x2: 'RGB565',
+        0x3: 'RGB5A3',
     }
 
 mesh_dict = {}
@@ -67,11 +76,15 @@ def decompressImage(file, texAddress, imageAddr):
     width = file.read('ushort', texAddress, offset=0)
     height = file.read('ushort', texAddress, offset=0x2)
     encoding = file.read('uint', texAddress, offset=0x8)
+    palEncoding = file.read('uint', texAddress, offset=0xC)
+    palAddr = file.read('uint', texAddress, offset=0x48)
     size = file.read('uint', texAddress, offset=0x4c)
     compressedData = file.read_chunk(imageAddr, size)
     imageData = gtx.decompress(compressedData,
                                width, height,
-                               encodings[encoding])
+                               encodings[encoding],
+                               palEncodings[palEncoding],
+                               palAddr - imageAddr)
     image = Image(imageData, width, height)
     return image
 
@@ -118,6 +131,27 @@ def parseActions(file, address, numActions):
         anim_dict[i] = {'name': name,
                         'bones': {}}
 
+# these are the types used in the game code as far as I can tell
+keyframeDataTypes = {
+    0 : 'float',
+    2 : 'quat',
+    5 : 'uchar',
+    6 : 'char',
+    7 : 'ushort',
+    8 : 'short', 
+}
+# for vector quantities, component 0 implies 3 component float and 4, 5, 6 imply 2 component float values
+
+# these data types are suggested by some setup code
+# they could correspond to the types implied by certain components
+unknownKeyFrameDataTypes = {
+    1 : 'unknown 1',
+    3 : 'unknown 3',
+    4 : 'unknown 4',
+    10 : 'unknown 10',
+    11 : 'unknown 11',
+}
+
 def parseFCurves(file, address, boneName):
     nextAddr = address
     while nextAddr != 0:
@@ -128,14 +162,34 @@ def parseFCurves(file, address, boneName):
         for i in range(numFCurves):
             fcurveAddr = fcurveListAddr + i * 0x10
             axis = file.read('uchar', fcurveAddr, offset=0x2)
+            if axis == 0:
+                # implies vec3 values
+                dataType = 'vec3'
+            elif (axis == 4 or axis == 5 or axis == 6):
+                # the actual ingame implementation of this looks broken so I don't expect it to be used outside of texture animation which uses different code
+                print('vec2 animation found in 3d anim: ', boneName)
+
             compIndex = file.read('uchar', fcurveAddr, offset=0x1)
+            dataType = file.read('uchar', fcurveAddr, offset=0x6)
+            if dataType in keyframeDataTypes:
+                dataType = keyframeDataTypes[dataType]
+            elif dataType in unknownKeyFrameDataTypes:
+                print('found one of the expected but undocumented data types: ', dataType)
+            else:
+                print('completely undocumented data type: ', dataType)
+            channelIndex = file.read('uchar', fcurveAddr, offset=0x3)
+            unkIndex = file.read('uchar', fcurveAddr, offset=0x4)
+            idk = file.read('uchar', fcurveAddr, offset=0x0)
             if compIndex >= 3:
                 print(f'Unknown component type: {compIndex} ({boneName}, {hex(fcurveAddr)})')
                 continue
             component = ['location', 'rotation_euler', 'scale'][compIndex]
             exp = file.read('uchar', fcurveAddr, offset=0x7)
+            if dataType == 'float' or dataType == 'quat' or dataType == 'vec3' or dataType == 'vec2':
+                # float values, no scaling required
+                exp = 0.0
             keyframeAddr = file.read('uint', fcurveAddr, offset=0x8)
-            keyframes = parseKeyframes(file, keyframeAddr, exp)
+            keyframes = parseKeyframes(file, keyframeAddr, exp, dataType)
             if len(keyframes) == 0:
                 continue
             fcurve = {'axis': axis,
@@ -144,33 +198,77 @@ def parseFCurves(file, address, boneName):
             anim_dict[actionIndex]['bones'][boneName].append(fcurve)
         nextAddr = file.read('uint', nextAddr, offset=0xc)
 
-def parseKeyframes(file, address, scale_exp):
+def parseKeyframes(file, address, scale_exp, dataType):
     valsAddr = file.read('uint', address, offset=0)
     derivsAddr = file.read('uint', address, offset=0x4)
+    valueCount = file.read('ushort', address, offset=0x8)
     keyframesAddr = file.read('uint', address, offset=0x10)
     numKeyframes = file.read('ushort', address, offset=0x14)
     keyframes = []
-    for i in range(numKeyframes):
-        keyframeAddr = keyframesAddr + i * 0xc
-        interpIndex = file.read('ushort', keyframeAddr)
-        interpolation = ['constant', 'linear', 'hermite'][interpIndex]
-        valueIndex = file.read('ushort', keyframeAddr, offset=0x2)
-        value = file.read('short', valsAddr, offset=(2 * valueIndex))
-        if derivsAddr > 0:
-            derivLIndex = file.read('ushort', keyframeAddr, offset=0x4)
-            derivLeft = file.read('float', derivsAddr, offset=(4 * derivLIndex))
-            derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
-            derivRight = file.read('float', derivsAddr, offset=(4 * derivRIndex))
-        else:
-            derivLeft = 0.0
-            derivRight = 0.0
-        time = file.read('float', keyframeAddr, offset=0x8)
-        keyframe = {'value': value / (2 ** scale_exp),
-                    'derivativeL': derivLeft,
-                    'derivativeR': derivRight,
-                    'time': time}
-        keyframes.append(keyframe)
+    if numKeyframes > 0:
+        for i in range(numKeyframes):
+            keyframeAddr = keyframesAddr + i * 0xc
+            interpIndex = file.read('ushort', keyframeAddr)
+            interpolation = ['CONSTANT', 'LINEAR', 'BEZIER'][interpIndex]
+            valueIndex = file.read('ushort', keyframeAddr, offset=0x2)
+            value = readKeyframeValue(file, dataType, valsAddr, valueIndex)
+            if derivsAddr > 0:
+                if dataType == 'quat' or dataType == 'vec3' or dataType == 'vec2':
+                    derivLIndex = file.read('ushort', keyframeAddr, offset=0x4)
+                    derivLeft = readKeyframeValue(file, dataType, derivsAddr, derivLIndex)
+                    derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
+                    derivRight = readKeyframeValue(file, dataType, derivsAddr, derivRIndex)
+                else:
+                    derivLIndex = file.read('ushort', keyframeAddr, offset=0x4)
+                    derivLeft = file.read('float', derivsAddr, offset=(4 * derivLIndex))
+                    derivRIndex = file.read('ushort', keyframeAddr, offset=0x6)
+                    derivRight = file.read('float', derivsAddr, offset=(4 * derivRIndex))
+            else:
+                print('derivative data not present even though it should be ...')
+                derivLeft = 0.0
+                derivRight = 0.0
+            time = file.read('float', keyframeAddr, offset=0x8)
+            keyframe = {'value': value / (2 ** scale_exp),
+                        'derivativeL': derivLeft,
+                        'derivativeR': derivRight,
+                        'interpolation': interpolation,
+                        'time': time}
+            keyframes.append(keyframe)
+    elif valueCount > 0:
+        # "keyframe" animation. stores data for each individual frame
+        # probably used for baked data, such as animation data from constraints and IK
+        framerate = file.read('ushort', address, offset=0x16) & 0xFF
+        for i in range(valueCount):
+            value = readKeyframeValue(file, dataType, valsAddr, i)
+            time = (0.5 + (i - 1)) / framerate
+            keyframe = {'value': value / (2 ** scale_exp),
+                        'derivativeL': 0.0,
+                        'derivativeR': 0.0,
+                        'interpolation': 'CONSTANT',
+                        'time': time}
+            keyframes.append(keyframe)
     return keyframes
+
+def readKeyframeValue(file, type, baseAdress, index):
+
+    if BinaryReader.is_primitive(type):
+        size = BinaryReader.primitive_size(type)
+        return file.read(type, baseAdress, offset=(size * index))
+    elif type == 'quat' or type == 'vec3' or type == 'vec2':
+        # multicomponent stuff needs to be handled separately
+        size = 4
+        if type == 'vec2':
+            n = 2
+            return Vector([file.read(type, baseAdress, offset=(size * (index * n + i))) for i in range(n)])
+        elif type == 'vec3':
+            n = 3
+            return Vector([file.read(type, baseAdress, offset=(size * (index * n + i))) for i in range(n)])
+        elif type == 'quat':
+            n = 4
+            return Quaternion([file.read(type, baseAdress, offset=(size * (index * n + i))) for i in range(n)])
+    else:
+        print('unknown data type: ', type)
+        return None
 
 def parseWeights(file, address):
     weights = []
@@ -320,7 +418,7 @@ def parseMeshPart(file, address):
         for mesh in parseMeshPart(file, nextMeshAddr):
             yield mesh
 
-def parseSkeleton(file, address, useDefaultPose=False):
+def parseSkeleton(file, address, useDefaultPose=False, sceneSettings=None):
     objNameAddr = file.read('uint', address, offset=0)
     name = file.read('string', objNameAddr)
     # actions
@@ -331,14 +429,29 @@ def parseSkeleton(file, address, useDefaultPose=False):
     numBones = file.read('ushort', address, offset=0x6)
     rootAddr = file.read('uint', address, offset=0x10)
     bones = [None] * numBones
-    rootBone = next(parseBones(file, rootAddr, bones, useDefaultPose))
+    rootBone = next(parseBones(file, rootAddr, bones, useDefaultPose, sceneSettings))
     return Skeleton(name, numBones, bones)
 
-def parseBones(file, address, bones, useDefaultPose=False):
+def parseBones(file, address, bones, useDefaultPose=False, sceneSettings=None):
     k = file.read('uint', address, offset=0)
     nameAddr = file.read('uint', address, offset=0x4)
     name = file.read('string', nameAddr)
     idx = file.read('ushort', address, offset=0x8)
+    nodeFlags = file.read('ushort', address, offset=0xA)
+
+    if k == 2:
+        boneFlags = file.read('uint', address, offset=0x30)
+    else:
+        boneFlags = 0
+    
+
+    i = 1
+    blenderName = name
+    boneNames = [bone.name for bone in bones if bone]
+    while blenderName in boneNames:
+        blenderName = f'{name}.{i:03d}'
+        i += 1
+    name = blenderName
 
     pos = Matrix.Identity(4)
     posAddr = file.read('uint', address, offset=0xc)
@@ -349,7 +462,8 @@ def parseBones(file, address, bones, useDefaultPose=False):
         pos = Matrix.Translation((x, y, z))
     else:
         pos = Matrix.Identity(4)
-
+        (x, y, z) = (0, 0, 0)
+    
     if useDefaultPose:
         rotAddr = file.read('uint', address, offset=0x10)
         if rotAddr != 0:
@@ -359,8 +473,10 @@ def parseBones(file, address, bones, useDefaultPose=False):
             rot = toRotationMatrix(rx, ry, rz)
         else:
             rot = Matrix.Identity(4)
+            (rx, ry, rz) = (0, 0, 0)
     else:
         rot = Matrix.Identity(4)
+        (rx, ry, rz) = (0, 0, 0)
     
     scaAddr = file.read('uint', address, offset=0x14)
     if scaAddr != 0:
@@ -371,13 +487,22 @@ def parseBones(file, address, bones, useDefaultPose=False):
         sca = toScaleMatrix(sx, sy, sz)
     else:
         sca = Matrix.Identity(4)
+        (sx, sy, sz) = (1, 1, 1)
+
+
+    sp = Vector((0.0, 0.0, 0.0))
+    st = Vector((0.0, 0.0, 0.0))
+    rp = Vector((0.0, 0.0, 0.0))
+    rt = Vector((0.0, 0.0, 0.0))
+    pivots = [sp, st, rp, rt]
     
     if k == 0x2:
         # bind pose rotation
-        rx = file.read('float', address, offset=0x34)
-        ry = file.read('float', 0, whence='current')
-        rz = file.read('float', 0, whence='current')
-        rot2 = toRotationMatrix(rx, ry, rz)
+        brx = file.read('float', address, offset=0x34)
+        bry = file.read('float', 0, whence='current')
+        brz = file.read('float', 0, whence='current')
+        rot2 = toRotationMatrix(brx, bry, brz)
+        orot = rot
         rot = rot2 @ rot
         # inverse bind matrix
         mat = []
@@ -389,12 +514,34 @@ def parseBones(file, address, bones, useDefaultPose=False):
             mat.append(row)
         mat.append([0.0, 0.0, 0.0, 1.0])
     else:
+        transPointer = file.read('uint', address, offset=0x18)
+        if transPointer:
+            print("MAYA MEME DETECTED IN ", name)
+            precomputed = sceneSettings['precomputedPivots']
+            file.seek(transPointer)
+            if precomputed:
+                length = 3
+                rt[0] = rt[1] = rt[2] = float('inf')
+            else:
+                length = 4 #len(pivots)
+
+            for i in range(length):
+                V = pivots[i]
+                for j in range(3):
+                    V[j] = file.read('float', 0, whence='current')
+
         mat = [[1.0, 0.0, 0.0, 0.0],
                [0.0, 1.0, 0.0, 0.0],
                [0.0, 0.0, 1.0, 0.0],
                [0.0, 0.0, 0.0, 1.0]]
+        rot2 = Matrix.Identity(4)
+        orot = Matrix.Identity(4)
+
     mat = Matrix(mat)
-    bone = Bone(idx, name, (pos @ rot @ sca), mat)
+    bone = Bone(idx, name, k, pivots, (pos @ rot @ sca), mat, rot2, (rx, ry, rz), (sx, sy, sz), (x, y, z), nodeFlags, boneFlags)
+    bone.type = k
+    bone.idk1 = file.read('uint', address, offset=0x40)
+    bone.idk2 = file.read('uint', address, offset=0x74)
     bones[idx] = bone
 
     animDataAddr = file.read('uint', address, offset=0x20)
@@ -403,23 +550,26 @@ def parseBones(file, address, bones, useDefaultPose=False):
     
     childAddr = file.read('uint', address, offset=0x24)
     if childAddr != 0:
-        for child in parseBones(file, childAddr, bones, useDefaultPose):
+        for child in parseBones(file, childAddr, bones, useDefaultPose, sceneSettings):
             bone.childIndices.append(child.index)
             child.parentIndex = idx
             
     if k == 0x3: # skin node
         meshAddr = file.read('uint', address, offset=0x30)
-        if meshAddr not in mesh_dict:
-            mesh_dict[meshAddr] = {
-                'object': parseMesh(file, meshAddr),
-                'index': len(mesh_dict)
-            }
-        bone.meshIndex = mesh_dict[meshAddr]['index']
+        # very hack-y fix to a bug I need to look closer at
+        meshStartAddr = file.read('uint', meshAddr, offset=0x18)
+        if meshStartAddr != 0:
+            if meshAddr not in mesh_dict:
+                mesh_dict[meshAddr] = {
+                    'object': parseMesh(file, meshAddr),
+                    'index': len(mesh_dict)
+                }
+            bone.meshIndex = mesh_dict[meshAddr]['index']
     yield bone
     
     nextAddr = file.read('uint', address, offset=0x28)
     if nextAddr != 0:
-        for sibling in parseBones(file, nextAddr, bones, useDefaultPose):
+        for sibling in parseBones(file, nextAddr, bones, useDefaultPose, sceneSettings):
             yield sibling
 
 def parseModel(path, useDefaultPose=False):
@@ -451,6 +601,12 @@ def parseModel(path, useDefaultPose=False):
         numTextures = file.read('ushort', 0x18)
         parseTextures(file, texturesListAddr, numTextures)
 
+        idk = file.read('uchar', 0x0)
+        idk1 = file.read('ushort', 0x2)
+        idk2 = file.read('uchar', 0x4)
+
+        sceneSettings = {'precomputedPivots': (idk < 1) or (idk1 < 3) or (idk2 == 0)}
+
         materialsListAddr = file.read('uint', 0x14)
         numMaterials = file.read('ushort', 0x1c)
         for i in range(numMaterials):
@@ -461,12 +617,18 @@ def parseModel(path, useDefaultPose=False):
             }
 
         skeletonHeaderAddr = file.read('uint', 0x8)
-        skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose)
+        skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose, sceneSettings)
         skeletons.append(skele)
     else:
         texturesListAddr = file.read('uint', 0xc)
         numTextures = file.read('ushort', 0x1a)
         parseTextures(file, texturesListAddr, numTextures)
+
+        idk = file.read('uchar', 0x0)
+        idk1 = file.read('ushort', 0x2)
+        idk2 = file.read('uchar', 0x4)
+
+        sceneSettings = {'precomputedPivots': (idk < 1) or (idk1 < 3) or (idk2 == 0)}
 
         materialsListAddr = file.read('uint', 0x14)
         numMaterials = file.read('ushort', 0x1e)
@@ -481,7 +643,7 @@ def parseModel(path, useDefaultPose=False):
         numSkeletons = file.read('ushort', 0x18)
         for i in range(numSkeletons):
             skeletonHeaderAddr = file.read('uint', skeletonsListAddrPtr + 4 * i)
-            skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose)
+            skele = parseSkeleton(file, skeletonHeaderAddr, useDefaultPose, sceneSettings)
             skeletons.append(skele)
         
     
@@ -555,8 +717,10 @@ def applyWeights(meshData, bones):
         transform = Matrix.Diagonal((0, 0, 0, 0))
         for idx, w in meshData.weights[i].items():
             transform = transform + \
-                        w * (bones[idx].globalTransform @ \
-                             bones[idx].inverseBindMatrix)
+                         w * (Matrix.Identity(4))
+        #                w * (bones[idx].globalTransform @ \
+        #                     bones[idx].inverseBindMatrix)
+        #                 w * (bones[idx].inverseBindMatrix)
         vert = transform @ Vector(meshData.vertices[i])
         vertices.append(tuple(vert))
         transform = transform.to_3x3() # remove translation
@@ -579,19 +743,228 @@ def makeMesh(meshData, partData, bones):
     m.normals_split_custom_set_from_vertices(meshData.vertNormals) 
     return m
 
-def makeAction(actionData):
+
+
+def makeAction(actionData, arma, skele):
+    sampleFramerate = max(60, bpy.context.scene.render.fps) # hardcoded for now
     action = bpy.data.actions.new(actionData['name'])
     for boneName in actionData['bones']:
-        for fcurveData in actionData['bones'][boneName]:
-            component = fcurveData['component']
-            axis = fcurveData['axis'] - 1
-            datapath = f'pose.bones["{boneName}"].{component}'
-            fcurve = action.fcurves.new(datapath, index=axis)
-            for keyframe in fcurveData['keyframes']:
-                frame = keyframe['time'] * bpy.context.scene.render.fps
-                fcurve.keyframe_points.insert(frame, keyframe['value'])
+        for bone in skele.bones:
+            if bone.name == boneName:
+                break
 
-def makeObject(context, meshData, partData, material, bones):
+        b = bpy.context.object.pose.bones[bone.name]
+
+        # temp components and static values
+        temporaryComponents = {
+            'location': ('t', bone.initialTrans),
+            'rotation_euler': ('r', bone.initialRot),
+            'scale': ('s', bone.initialScale),
+        }
+        # bake animation
+
+        # move normal channels into temporary ones for sampling
+        endTime = 0 
+        temporaryCurves = {}
+        for fcurveData in actionData['bones'][boneName]:
+            tempComponent = temporaryComponents[fcurveData['component']][0]
+            axis = fcurveData['axis'] - 1
+            tempDatapath = f'pose.bones["{boneName}"].{tempComponent}'
+            existingCurve = action.fcurves.find(tempDatapath, index = axis)
+            if existingCurve:
+                action.fcurves.remove(existingCurve)
+            fcurve = action.fcurves.new(tempDatapath, index=axis)
+            temporaryCurves[f'{tempComponent}{axis}'] = fcurve
+
+            duplicateFrames = []
+
+            for i, keyframe in enumerate(fcurveData['keyframes']):
+                endTime = max(endTime, keyframe['time'])
+                frame = keyframe['time'] * bpy.context.scene.render.fps
+                oldKeyframeCount = len(fcurve.keyframe_points)
+                kframe = fcurve.keyframe_points.insert(frame, keyframe['value'])
+                newKeyframeCount = len(fcurve.keyframe_points)
+                kframe.handle_right_type = kframe.handle_left_type = 'FREE'
+                kframe.interpolation = keyframe['interpolation']
+                if newKeyframeCount != oldKeyframeCount + 1:
+                    print('duplicate keyframe time! ', i)
+                    duplicateFrames.append(i)
+            
+            keyframes = fcurve.keyframe_points[:]
+
+            i = 0
+
+            for j, keyframe in enumerate(fcurveData['keyframes']):
+
+                if j in duplicateFrames:
+                    continue
+
+                kx = keyframes[i].co[0]
+                ky = keyframes[i].co[1]
+                if i > 0:
+                    dtL = keyframes[i].co[0] - keyframes[i - 1].co[0]
+                    dxL = keyframe['derivativeL']
+                    keyframes[i].handle_left[0] = kx - dtL / 3
+                    keyframes[i].handle_left[1] = ky - dxL / 3
+                    
+
+                if i < len(keyframes) - 1:
+                    dtR = keyframes[i + 1].co[0] - keyframes[i].co[0]
+                    dxR = keyframe['derivativeR']
+                    keyframes[i].handle_right[0] = kx + dtR / 3
+                    keyframes[i].handle_right[1] = ky + dxR / 3
+
+
+                i += 1
+
+        sampleFrames = math.ceil(sampleFramerate * endTime)
+
+        # add curves for non-animated channels to make next step simpler
+        for ax in [0, 1, 2]:
+            for c, base in temporaryComponents.values():
+                if f'{c}{ax}' not in temporaryCurves:
+                    tempDatapath = f'pose.bones["{boneName}"].{c}'
+                    fcurve = action.fcurves.new(tempDatapath, index=ax)
+                    temporaryCurves[f'{c}{ax}'] = fcurve
+                    fcurve.keyframe_points.insert(0, base[ax])
+
+        # add proper channels
+        finalCurves = {}
+        for ax in [0, 1, 2]:
+            for component, (c, _) in temporaryComponents.items():
+                datapath = f'pose.bones["{boneName}"].{component}'
+                fcurve = action.fcurves.new(datapath, index=ax)
+                finalCurves[f'{c}{ax}'] = fcurve
+
+        if bone.type == 2:
+
+            local = bone.localTransform
+            if b.parent:
+                relativeBind = b.parent.bone.matrix_local.inverted() @ b.bone.matrix_local
+            else:
+                relativeBind = b.bone.matrix_local
+
+            invRelativeBind = relativeBind.inverted()
+            jointOrientation = bone.bindRotation
+
+            # scale corrections for blender
+            s = bone.inverseBindMatrix.inverted().to_scale()
+            C_1 = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0))
+            
+            if b.parent:
+                s = bone.invparentBind.inverted().to_scale()
+                C_2 = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
+            
+            # sample curves and calculate values corrected for the edit bone transformation
+            for i in range(sampleFrames):
+                frame = i * bpy.context.scene.render.fps / sampleFramerate
+                scale_x = Matrix.Scale(temporaryCurves['s0'].evaluate(frame), 4, [1.0,0.0,0.0])
+                scale_y = Matrix.Scale(temporaryCurves['s1'].evaluate(frame), 4, [0.0,1.0,0.0])
+                scale_z = Matrix.Scale(temporaryCurves['s2'].evaluate(frame), 4, [0.0,0.0,1.0])
+                rotation_x = Matrix.Rotation(temporaryCurves['r0'].evaluate(frame), 4, 'X')
+                rotation_y = Matrix.Rotation(temporaryCurves['r1'].evaluate(frame), 4, 'Y')
+                rotation_z = Matrix.Rotation(temporaryCurves['r2'].evaluate(frame), 4, 'Z')
+                translation = Matrix.Translation(Vector((temporaryCurves['t0'].evaluate(frame), 
+                                                        temporaryCurves['t1'].evaluate(frame), 
+                                                        temporaryCurves['t2'].evaluate(frame))))
+                
+                rotation = rotation_z @ rotation_y @ rotation_x
+                scale = scale_z @ scale_y @ scale_x
+                targetMtx = translation @ jointOrientation @ rotation @ scale
+
+                # blender scale corrections
+                targetMtx = targetMtx @ C_1
+                if b.parent:
+                    targetMtx = C_2 @ targetMtx
+
+                correctedMatrix = invRelativeBind @ targetMtx
+
+                trans, rot, scale = correctedMatrix.decompose()
+                rot = rot.to_euler()
+                finalCurves['s0'].keyframe_points.insert(frame, scale[0]).interpolation = 'CONSTANT'
+                finalCurves['s1'].keyframe_points.insert(frame, scale[1]).interpolation = 'CONSTANT'
+                finalCurves['s2'].keyframe_points.insert(frame, scale[2]).interpolation = 'CONSTANT'
+                finalCurves['r0'].keyframe_points.insert(frame, rot[0]).interpolation = 'CONSTANT'
+                finalCurves['r1'].keyframe_points.insert(frame, rot[1]).interpolation = 'CONSTANT'
+                finalCurves['r2'].keyframe_points.insert(frame, rot[2]).interpolation = 'CONSTANT'
+                finalCurves['t0'].keyframe_points.insert(frame, trans[0]).interpolation = 'CONSTANT'
+                finalCurves['t1'].keyframe_points.insert(frame, trans[1]).interpolation = 'CONSTANT'
+                finalCurves['t2'].keyframe_points.insert(frame, trans[2]).interpolation = 'CONSTANT'
+
+
+            
+
+        elif (bone.type == 0 or bone.type == 3 or bone.type == 5 or bone.type == 6 or bone.type == 7):
+            # GSnull, GSmodel, GSlight, GSvolume, GSparticle
+
+            # time for maya memes
+            precomputed = (bone.RotationPivotTranslate[0] == float('inf') 
+                        or bone.RotationPivotTranslate[1] == float('inf')
+                        or bone.RotationPivotTranslate[2] == float('inf'))
+            if precomputed:
+                T_1 = bone.ScalePivot
+                T_2 = bone.ScalePivotTranslate
+                T_3 = bone.RotatePivot
+            else:
+                T_1 = -bone.ScalePivot
+                T_2 = bone.ScalePivot + bone.ScalePivotTranslate - bone.RotatePivot
+                T_3 = bone.RotatePivot + bone.RotationPivotTranslate
+
+            T_1 = Matrix.Translation(T_1)
+            T_2 = Matrix.Translation(T_2)
+            T_3 = Matrix.Translation(T_3)
+
+            local = bone.localTransform
+            if b.parent:
+                relativeBind = b.parent.bone.matrix_local.inverted() @ b.bone.matrix_local
+            else:
+                relativeBind = b.bone.matrix_local
+
+            invRelativeBind = relativeBind.inverted()
+
+            for i in range(sampleFrames):
+                frame = i * bpy.context.scene.render.fps / sampleFramerate
+                scale_x = Matrix.Scale(temporaryCurves['s0'].evaluate(frame), 4, [1.0,0.0,0.0])
+                scale_y = Matrix.Scale(temporaryCurves['s1'].evaluate(frame), 4, [0.0,1.0,0.0])
+                scale_z = Matrix.Scale(temporaryCurves['s2'].evaluate(frame), 4, [0.0,0.0,1.0])
+                rotation_x = Matrix.Rotation(temporaryCurves['r0'].evaluate(frame), 4, 'X')
+                rotation_y = Matrix.Rotation(temporaryCurves['r1'].evaluate(frame), 4, 'Y')
+                rotation_z = Matrix.Rotation(temporaryCurves['r2'].evaluate(frame), 4, 'Z')
+                translation = Matrix.Translation(Vector((temporaryCurves['t0'].evaluate(frame), 
+                                                        temporaryCurves['t1'].evaluate(frame), 
+                                                        temporaryCurves['t2'].evaluate(frame))))
+                
+                rotation = rotation_z @ rotation_y @ rotation_x
+                scale = scale_z @ scale_y @ scale_x
+                targetMtx = translation @ T_3 @ rotation @ T_2 @ scale @ T_1
+
+                correctedMatrix = invRelativeBind @ targetMtx
+
+                trans, rot, scale = correctedMatrix.decompose()
+                rot = rot.to_euler()
+                finalCurves['s0'].keyframe_points.insert(frame, scale[0]).interpolation = 'CONSTANT'
+                finalCurves['s1'].keyframe_points.insert(frame, scale[1]).interpolation = 'CONSTANT'
+                finalCurves['s2'].keyframe_points.insert(frame, scale[2]).interpolation = 'CONSTANT'
+                finalCurves['r0'].keyframe_points.insert(frame, rot[0]).interpolation = 'CONSTANT'
+                finalCurves['r1'].keyframe_points.insert(frame, rot[1]).interpolation = 'CONSTANT'
+                finalCurves['r2'].keyframe_points.insert(frame, rot[2]).interpolation = 'CONSTANT'
+                finalCurves['t0'].keyframe_points.insert(frame, trans[0]).interpolation = 'CONSTANT'
+                finalCurves['t1'].keyframe_points.insert(frame, trans[1]).interpolation = 'CONSTANT'
+                finalCurves['t2'].keyframe_points.insert(frame, trans[2]).interpolation = 'CONSTANT'
+
+        elif bone.type == 1:
+            print("What the fuck is node type 1?")
+        else:
+            # TODO: camera
+            print("Camera animations are currently not implemented")
+
+        # remove temporary curves
+        for fcurve in temporaryCurves.values():
+            action.fcurves.remove(fcurve)
+        
+            
+
+def makeObject(context, meshData, partData, material, bones, meshBone):
     m = makeMesh(meshData, partData, bones)
     o = bpy.data.objects.new('mesh', m)
     context.collection.objects.link(o)
@@ -607,13 +980,20 @@ def makeObject(context, meshData, partData, material, bones):
                 if name not in o.vertex_groups:
                     o.vertex_groups.new(name=name)
                 o.vertex_groups[name].add([i], w, 'REPLACE')
+    else:
+        # rigid skin
+        name = meshBone.name
+        for i in range(len(meshData.vertices)):
+            if name not in o.vertex_groups:
+                o.vertex_groups.new(name=name)
+            o.vertex_groups[name].add([i], 1.0, 'REPLACE')
     return o
 
 def makeArmature_r(edit_bones, bones, boneIndex):
     boneData = bones[boneIndex]
     bone = edit_bones.new(boneData.name)
     bone.tail = (0, 0, 0.5) # length = 0.5
-    bone.transform(boneData.globalTransform)
+    bone.matrix = boneData.inverseBindMatrix.inverted()
     for childIndex in boneData.childIndices:
         child = makeArmature_r(edit_bones, bones, childIndex)
         child.parent = bone
@@ -629,6 +1009,40 @@ def makeArmature(context, skele):
     edit_bones.remove(edit_bones['Bone'])
     makeArmature_r(edit_bones, skele.bones, 0)
     bpy.ops.object.mode_set(mode='OBJECT')
+    for bone in skele.bones:
+        b = arma.pose.bones[bone.name]
+
+        # another maya meme: scale compensation
+        if b.parent:
+            isBone = bone.type == 2
+            dontInheritScale = isBone and (bone.nodeFlags >> 3) & 1 and (bone.boneFlags & 8)
+            if dontInheritScale:
+                b.bone.inherit_scale = 'NONE_LEGACY'
+
+        if b.name != bone.name:
+            print("DUPLICATE BONE NAME: ", b.name, " ", bone.name)
+
+        local = bone.localTransform
+        if b.parent:
+            relativeBind = b.parent.bone.matrix_local.inverted() @ b.bone.matrix_local
+        else:
+            relativeBind = b.bone.matrix_local
+
+        # scale corrections for blender
+        s = bone.inverseBindMatrix.to_scale()
+        C = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
+        local = local @ C
+        
+        if b.parent:
+            s = bone.invparentBind.to_scale()
+            C = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0))
+            local = C @ local
+
+        b.matrix_basis = relativeBind.inverted() @ local
+        b["type"] = bone.type
+        b["flag"] = "{0:b}".format(bone.nodeFlags)
+        b["idk1"] = hex(bone.idk1)
+        b["idk2"] = hex(bone.idk2)
     
     return arma
 
@@ -641,11 +1055,11 @@ def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
         img = images[i]
         image = bpy.data.images.new(f'image{i}', img.width, img.height)
         # Blender expects values to be normalized
-        image.pixels = [(x / 255) for x in img.pixels]
-        path = f'{os.path.dirname(path)}\\texture{i}.png'
-        image.filepath_raw = path
-        image.file_format = 'PNG'
-        image.save()
+        image.pixels = [(x / 255) for x in img.pixels][:len(image.pixels)]
+        #path = f'{os.path.dirname(path)}/texture{i}.png'
+        #image.filepath_raw = path
+        #image.file_format = 'PNG'
+        #image.save()
         images[i] = image
     
     # create materials
@@ -670,7 +1084,7 @@ def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
         for bone in arma.pose.bones:
             bone.rotation_mode = 'XYZ'
         for action in anim_dict:
-            makeAction(anim_dict[action])
+            makeAction(anim_dict[action], arma, skele)
         arma.select_set(False)
         # create meshes
         for bone in skele.bones:
@@ -680,7 +1094,7 @@ def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
                 bpy.ops.object.select_all(action='DESELECT')
                 for part in mesh.parts:
                     mat = materials[part.materialIndex]
-                    obj = makeObject(context, mesh, part, mat, skele.bones)
+                    obj = makeObject(context, mesh, part, mat, skele.bones, bone)
                     obj.name = bone.name
                     obj.select_set(True)
                     parts.append(obj)
