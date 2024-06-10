@@ -82,9 +82,30 @@ class BinaryReader:
         Returns bool indicating whether `type` is a primitive
         type and can thus be read by a BinaryReader
         """
-        return type in ['uint8', 'uint16', 'uint32',
-                        'int8', 'int16', 'int32',
+        return type in ['uchar', 'ushort', 'uint',
+                        'char', 'short', 'int',
                         'float', 'double', 'string']
+
+    @staticmethod
+    def primitive_size(type):
+        primitive_sizes = {
+            'uchar'  : 1,
+            'char'   : 1,
+            'ushort' : 2,
+            'short'  : 2,
+            'uint'   : 4,
+            'int'    : 4,
+            'float'  : 4,
+            'double' : 8,
+        }
+
+        if type == 'string':
+            return 0
+        if not BinaryReader.is_primitive(type):
+            return 0
+
+        return primitive_sizes[type]
+
     @staticmethod
     def is_array(type):
         return type.endswith('[]')

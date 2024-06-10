@@ -45,13 +45,29 @@ class MeshPart:
         self.materialIndex = matID
 
 class Bone:
-    def __init__(self, i, name, trans, mat):
+    def __init__(self, i, name, type, pivots, trans, mat, brot, rot, sca, pos, nodeFlags, boneFlags):
         self.index = i
         self.name = name
+        self.type = type
+
+        self.ScalePivot = pivots[0]
+        self.ScalePivotTranslate = pivots[1]
+        self.RotatePivot = pivots[2]
+        self.RotationPivotTranslate = pivots[3]
+
+        self.inverseBindMatrix = mat
+        
+        self.initialRot = rot
+        self.initialScale = sca
+        self.initialTrans = pos
+        self.bindRotation = brot
+        self.nodeFlags = nodeFlags
+        self.boneFlags = boneFlags
+
+        self.parentRelativeBind = None
         
         self.localTransform = trans
         # self.globalTransform calculated by Skeleton
-        self.inverseBindMatrix = mat
 
         self.childIndices = []
         self.parentIndex = None
@@ -66,8 +82,13 @@ class Skeleton:
 
         self.calcGlobalTransforms(0, Matrix.Identity(4))
 
-    def calcGlobalTransforms(self, idx, parentTransform):
+    def calcGlobalTransforms(self, idx, parentTransform, invparentBind = Matrix.Identity(4)):
         bone = self.bones[idx]
+        s = invparentBind.to_scale()
+        #invparentBindWithoutScale = Matrix.Diagonal((1 / s[0], 1 / s[1], 1 / s[2], 1.0)) @ invparentBind
+        bone.invparentBind = invparentBind
+        bone.parentRelativeBind = invparentBind @ bone.inverseBindMatrix.inverted()
         bone.globalTransform = parentTransform @ bone.localTransform
+
         for childIndex in bone.childIndices:
-            self.calcGlobalTransforms(childIndex, bone.globalTransform)
+            self.calcGlobalTransforms(childIndex, bone.globalTransform, bone.inverseBindMatrix)
