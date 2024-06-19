@@ -1,5 +1,7 @@
 import os, math, struct
 from mathutils import Euler, Matrix, Vector, Quaternion
+import numpy as np
+import time
 
 import bpy, bmesh
 
@@ -743,11 +745,10 @@ def makeMesh(meshData, partData, bones):
     m.normals_split_custom_set_from_vertices(meshData.vertNormals) 
     return m
 
-
-
 def makeAction(actionData, arma, skele):
     sampleFramerate = max(60, bpy.context.scene.render.fps) # hardcoded for now
     action = bpy.data.actions.new(actionData['name'])
+    ttimes = []
     for boneName in actionData['bones']:
         for bone in skele.bones:
             if bone.name == boneName:
@@ -762,6 +763,9 @@ def makeAction(actionData, arma, skele):
             'scale': ('s', bone.initialScale),
         }
         # bake animation
+
+        times = [0] * 7
+        times[0] = time.time()
 
         # move normal channels into temporary ones for sampling
         endTime = 0 
@@ -836,6 +840,32 @@ def makeAction(actionData, arma, skele):
                 fcurve = action.fcurves.new(datapath, index=ax)
                 finalCurves[f'{c}{ax}'] = fcurve
 
+        times[1] = time.time()
+
+        for s in ['s0', 's1', 's2', 'r0', 'r1', 'r2', 't0', 't1', 't2']:
+            finalCurves[s].keyframe_points.add(sampleFrames)
+            for i in range(sampleFrames):
+                frame = i * bpy.context.scene.render.fps / sampleFramerate
+                finalCurves[s].keyframe_points[i].co[0] = frame
+
+        times[2] = time.time()
+
+        # sample
+        rate = bpy.context.scene.render.fps / sampleFramerate
+        scale = np.array([Vector((temporaryCurves['s0'].evaluate(frame * rate),
+                                  temporaryCurves['s1'].evaluate(frame * rate),
+                                  temporaryCurves['s2'].evaluate(frame * rate), 1.0)) for frame in range(sampleFrames)])
+        
+        translation = np.array([Matrix.Translation(Vector((temporaryCurves['t0'].evaluate(frame * rate),
+                                                           temporaryCurves['t1'].evaluate(frame * rate),
+                                                           temporaryCurves['t2'].evaluate(frame * rate)))) for frame in range(sampleFrames)])
+
+        rotation = np.array([Euler((temporaryCurves['r0'].evaluate(frame * rate),
+                                    temporaryCurves['r1'].evaluate(frame * rate),
+                                    temporaryCurves['r2'].evaluate(frame * rate))).to_matrix().to_4x4() for frame in range(sampleFrames)])
+
+        times[3] = time.time()
+
         if bone.type == 2:
 
             local = bone.localTransform
@@ -854,44 +884,11 @@ def makeAction(actionData, arma, skele):
             if b.parent:
                 s = bone.invparentBind.inverted().to_scale()
                 C_2 = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
-            
-            # sample curves and calculate values corrected for the edit bone transformation
-            for i in range(sampleFrames):
-                frame = i * bpy.context.scene.render.fps / sampleFramerate
-                scale_x = Matrix.Scale(temporaryCurves['s0'].evaluate(frame), 4, [1.0,0.0,0.0])
-                scale_y = Matrix.Scale(temporaryCurves['s1'].evaluate(frame), 4, [0.0,1.0,0.0])
-                scale_z = Matrix.Scale(temporaryCurves['s2'].evaluate(frame), 4, [0.0,0.0,1.0])
-                rotation_x = Matrix.Rotation(temporaryCurves['r0'].evaluate(frame), 4, 'X')
-                rotation_y = Matrix.Rotation(temporaryCurves['r1'].evaluate(frame), 4, 'Y')
-                rotation_z = Matrix.Rotation(temporaryCurves['r2'].evaluate(frame), 4, 'Z')
-                translation = Matrix.Translation(Vector((temporaryCurves['t0'].evaluate(frame), 
-                                                        temporaryCurves['t1'].evaluate(frame), 
-                                                        temporaryCurves['t2'].evaluate(frame))))
-                
-                rotation = rotation_z @ rotation_y @ rotation_x
-                scale = scale_z @ scale_y @ scale_x
-                targetMtx = translation @ jointOrientation @ rotation @ scale
 
-                # blender scale corrections
-                targetMtx = targetMtx @ C_1
-                if b.parent:
-                    targetMtx = C_2 @ targetMtx
-
-                correctedMatrix = invRelativeBind @ targetMtx
-
-                trans, rot, scale = correctedMatrix.decompose()
-                rot = rot.to_euler()
-                finalCurves['s0'].keyframe_points.insert(frame, scale[0]).interpolation = 'CONSTANT'
-                finalCurves['s1'].keyframe_points.insert(frame, scale[1]).interpolation = 'CONSTANT'
-                finalCurves['s2'].keyframe_points.insert(frame, scale[2]).interpolation = 'CONSTANT'
-                finalCurves['r0'].keyframe_points.insert(frame, rot[0]).interpolation = 'CONSTANT'
-                finalCurves['r1'].keyframe_points.insert(frame, rot[1]).interpolation = 'CONSTANT'
-                finalCurves['r2'].keyframe_points.insert(frame, rot[2]).interpolation = 'CONSTANT'
-                finalCurves['t0'].keyframe_points.insert(frame, trans[0]).interpolation = 'CONSTANT'
-                finalCurves['t1'].keyframe_points.insert(frame, trans[1]).interpolation = 'CONSTANT'
-                finalCurves['t2'].keyframe_points.insert(frame, trans[2]).interpolation = 'CONSTANT'
-
-
+            if b.parent:
+                correctedMatrix = np.einsum('...sh,hi,...in,nm,...mj,...j,jt->...st', invRelativeBind, C_2, translation, jointOrientation, rotation, scale, C_1, optimize='greedy')
+            else:
+                correctedMatrix = np.einsum('...si,...in,nm,...mj,...j,jt->...st', invRelativeBind, translation, jointOrientation, rotation, scale, C_1, optimize='greedy')
             
 
         elif (bone.type == 0 or bone.type == 3 or bone.type == 5 or bone.type == 6 or bone.type == 7):
@@ -922,35 +919,7 @@ def makeAction(actionData, arma, skele):
 
             invRelativeBind = relativeBind.inverted()
 
-            for i in range(sampleFrames):
-                frame = i * bpy.context.scene.render.fps / sampleFramerate
-                scale_x = Matrix.Scale(temporaryCurves['s0'].evaluate(frame), 4, [1.0,0.0,0.0])
-                scale_y = Matrix.Scale(temporaryCurves['s1'].evaluate(frame), 4, [0.0,1.0,0.0])
-                scale_z = Matrix.Scale(temporaryCurves['s2'].evaluate(frame), 4, [0.0,0.0,1.0])
-                rotation_x = Matrix.Rotation(temporaryCurves['r0'].evaluate(frame), 4, 'X')
-                rotation_y = Matrix.Rotation(temporaryCurves['r1'].evaluate(frame), 4, 'Y')
-                rotation_z = Matrix.Rotation(temporaryCurves['r2'].evaluate(frame), 4, 'Z')
-                translation = Matrix.Translation(Vector((temporaryCurves['t0'].evaluate(frame), 
-                                                        temporaryCurves['t1'].evaluate(frame), 
-                                                        temporaryCurves['t2'].evaluate(frame))))
-                
-                rotation = rotation_z @ rotation_y @ rotation_x
-                scale = scale_z @ scale_y @ scale_x
-                targetMtx = translation @ T_3 @ rotation @ T_2 @ scale @ T_1
-
-                correctedMatrix = invRelativeBind @ targetMtx
-
-                trans, rot, scale = correctedMatrix.decompose()
-                rot = rot.to_euler()
-                finalCurves['s0'].keyframe_points.insert(frame, scale[0]).interpolation = 'CONSTANT'
-                finalCurves['s1'].keyframe_points.insert(frame, scale[1]).interpolation = 'CONSTANT'
-                finalCurves['s2'].keyframe_points.insert(frame, scale[2]).interpolation = 'CONSTANT'
-                finalCurves['r0'].keyframe_points.insert(frame, rot[0]).interpolation = 'CONSTANT'
-                finalCurves['r1'].keyframe_points.insert(frame, rot[1]).interpolation = 'CONSTANT'
-                finalCurves['r2'].keyframe_points.insert(frame, rot[2]).interpolation = 'CONSTANT'
-                finalCurves['t0'].keyframe_points.insert(frame, trans[0]).interpolation = 'CONSTANT'
-                finalCurves['t1'].keyframe_points.insert(frame, trans[1]).interpolation = 'CONSTANT'
-                finalCurves['t2'].keyframe_points.insert(frame, trans[2]).interpolation = 'CONSTANT'
+            correctedMatrix = np.einsum('...ij,...jk,kl,...lm,mt,...t,ts->...is', invRelativeBind, translation, T_3, rotation, T_2, scale, T_1, optimize='greedy')
 
         elif bone.type == 1:
             print("What the fuck is node type 1?")
@@ -958,11 +927,50 @@ def makeAction(actionData, arma, skele):
             # TODO: camera
             print("Camera animations are currently not implemented")
 
+        times[4] = time.time()
+
+        times[5] = time.time()
+
+        for i in range(sampleFrames):
+            trans, rot, scale = Matrix(correctedMatrix[i]).decompose()
+            rot = rot.to_euler()
+            finalCurves['s0'].keyframe_points[i].co[1] = scale[0]
+            finalCurves['s0'].keyframe_points[i].interpolation = 'CONSTANT'
+            finalCurves['s1'].keyframe_points[i].co[1] = scale[1]
+            finalCurves['s1'].keyframe_points[i].interpolation = 'CONSTANT'
+            finalCurves['s2'].keyframe_points[i].co[1] = scale[2]
+            finalCurves['s2'].keyframe_points[i].interpolation = 'CONSTANT'
+            finalCurves['r0'].keyframe_points[i].co[1] = rot[0]
+            finalCurves['r0'].keyframe_points[i].interpolation = 'CONSTANT'
+            finalCurves['r1'].keyframe_points[i].co[1] = rot[1]
+            finalCurves['r1'].keyframe_points[i].interpolation = 'CONSTANT'
+            finalCurves['r2'].keyframe_points[i].co[1] = rot[2]
+            finalCurves['r2'].keyframe_points[i].interpolation = 'CONSTANT'
+            finalCurves['t0'].keyframe_points[i].co[1] = trans[0]
+            finalCurves['t0'].keyframe_points[i].interpolation = 'CONSTANT'
+            finalCurves['t1'].keyframe_points[i].co[1] = trans[1]
+            finalCurves['t1'].keyframe_points[i].interpolation = 'CONSTANT'
+            finalCurves['t2'].keyframe_points[i].co[1] = trans[2]
+            finalCurves['t2'].keyframe_points[i].interpolation = 'CONSTANT'
+
+        times[6] = time.time()
+        ttimes.append(times)
+        
         # remove temporary curves
         for fcurve in temporaryCurves.values():
             action.fcurves.remove(fcurve)
+
+    times = [0] * 6
+    total = 0
+    for times_ in ttimes:
+        durations = [times_[i + 1] - times_[i] for i in range(len(times_) - 1)]
+        for i in range(len(times)):
+            times[i] += durations[i]
+            total += durations[i]
         
-            
+    times = [f"{t / total * 100:3.2f}%" for t in times]
+    print(' '.join(times))
+
 
 def makeObject(context, meshData, partData, material, bones, meshBone):
     m = makeMesh(meshData, partData, bones)
