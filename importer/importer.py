@@ -1,7 +1,6 @@
-import os, math, struct
+import os, math, struct, time, sys
 from mathutils import Euler, Matrix, Vector, Quaternion
 import numpy as np
-import time
 
 import bpy, bmesh
 
@@ -183,7 +182,8 @@ def parseFCurves(file, address, boneName):
             unkIndex = file.read('uchar', fcurveAddr, offset=0x4)
             idk = file.read('uchar', fcurveAddr, offset=0x0)
             if compIndex >= 3:
-                print(f'Unknown component type: {compIndex} ({boneName}, {hex(fcurveAddr)})')
+                if compIndex >= 4:
+                    print(f'Unknown component type: {compIndex} ({boneName}, {hex(fcurveAddr)})')
                 continue
             component = ['location', 'rotation_euler', 'scale'][compIndex]
             exp = file.read('uchar', fcurveAddr, offset=0x7)
@@ -518,7 +518,7 @@ def parseBones(file, address, bones, useDefaultPose=False, sceneSettings=None):
     else:
         transPointer = file.read('uint', address, offset=0x18)
         if transPointer:
-            print("MAYA MEME DETECTED IN ", name)
+            # print("MAYA MEME DETECTED IN ", name)
             precomputed = sceneSettings['precomputedPivots']
             file.seek(transPointer)
             if precomputed:
@@ -746,9 +746,13 @@ def makeMesh(meshData, partData, bones):
     return m
 
 def makeAction(actionData, arma, skele):
+    actionNameWithQuotes = f'"{actionData["name"]}"'
+    print(f'Importing Action {actionNameWithQuotes: <16} ...', end='')
+
     sampleFramerate = max(60, bpy.context.scene.render.fps) # hardcoded for now
     action = bpy.data.actions.new(actionData['name'])
     ttimes = []
+    sys.stdout.flush()
     for boneName in actionData['bones']:
         for bone in skele.bones:
             if bone.name == boneName:
@@ -844,25 +848,41 @@ def makeAction(actionData, arma, skele):
 
         for s in ['s0', 's1', 's2', 'r0', 'r1', 'r2', 't0', 't1', 't2']:
             finalCurves[s].keyframe_points.add(sampleFrames)
-            for i in range(sampleFrames):
-                frame = i * bpy.context.scene.render.fps / sampleFramerate
-                finalCurves[s].keyframe_points[i].co[0] = frame
+            finalCurves[s].keyframe_points.foreach_set("interpolation", [bpy.types.Keyframe.bl_rna.properties["interpolation"].enum_items['CONSTANT'].value] * sampleFrames)
 
         times[2] = time.time()
 
         # sample
+        # these calculations are done manually because the blender functions are slower
         rate = bpy.context.scene.render.fps / sampleFramerate
-        scale = np.array([Vector((temporaryCurves['s0'].evaluate(frame * rate),
-                                  temporaryCurves['s1'].evaluate(frame * rate),
-                                  temporaryCurves['s2'].evaluate(frame * rate), 1.0)) for frame in range(sampleFrames)])
-        
-        translation = np.array([Matrix.Translation(Vector((temporaryCurves['t0'].evaluate(frame * rate),
-                                                           temporaryCurves['t1'].evaluate(frame * rate),
-                                                           temporaryCurves['t2'].evaluate(frame * rate)))) for frame in range(sampleFrames)])
+        scale = np.empty((sampleFrames, 4), dtype='float')
+        translation = np.empty((sampleFrames, 4, 4), dtype='float')
+        rotation = np.empty((sampleFrames, 4, 4), dtype='float')
+        for frame in range(sampleFrames):
+            scale[frame, :] = (temporaryCurves['s0'].evaluate(frame * rate),
+                               temporaryCurves['s1'].evaluate(frame * rate),
+                               temporaryCurves['s2'].evaluate(frame * rate), 1.0)
 
-        rotation = np.array([Euler((temporaryCurves['r0'].evaluate(frame * rate),
-                                    temporaryCurves['r1'].evaluate(frame * rate),
-                                    temporaryCurves['r2'].evaluate(frame * rate))).to_matrix().to_4x4() for frame in range(sampleFrames)])
+            translation[frame, :, :] = ((1.0, 0.0, 0.0, temporaryCurves['t0'].evaluate(frame * rate)),
+                                        (0.0, 1.0, 0.0, temporaryCurves['t1'].evaluate(frame * rate)),
+                                        (0.0, 0.0, 1.0, temporaryCurves['t2'].evaluate(frame * rate)),
+                                        (0.0, 0.0, 0.0, 1.0))
+
+            alpha = temporaryCurves['r0'].evaluate(frame * rate)
+            beta = temporaryCurves['r1'].evaluate(frame * rate)
+            gamma = temporaryCurves['r2'].evaluate(frame * rate)
+
+            cosgamma = math.cos(gamma) 
+            singamma = math.sin(gamma)
+            cosbeta = math.cos(beta)
+            sinbeta = math.sin(beta)
+            cosalpha = math.cos(alpha)
+            sinalpha = math.sin(alpha)
+
+            rotation[frame, :, :] = ((cosbeta*cosgamma, sinalpha*sinbeta*cosgamma - cosalpha*singamma, cosalpha*sinbeta*cosgamma + sinalpha*singamma, 0.0),
+                                     (cosbeta*singamma, sinalpha*sinbeta*singamma + cosalpha*cosgamma, cosalpha*sinbeta*singamma - sinalpha*cosgamma, 0.0),
+                                     (-sinbeta,         sinalpha*cosbeta,                              cosalpha*cosbeta,                              0.0),
+                                     (0.0,              0.0,                                           0.0,                                           1.0))
 
         times[3] = time.time()
 
@@ -931,27 +951,48 @@ def makeAction(actionData, arma, skele):
 
         times[5] = time.time()
 
+        scales = [np.empty((2 * sampleFrames), dtype='float'), np.empty((2 * sampleFrames), dtype='float'), np.empty((2 * sampleFrames), dtype='float')]
+        rots   = [np.empty((2 * sampleFrames), dtype='float'), np.empty((2 * sampleFrames), dtype='float'), np.empty((2 * sampleFrames), dtype='float')]
+        transs = [np.empty((2 * sampleFrames), dtype='float'), np.empty((2 * sampleFrames), dtype='float'), np.empty((2 * sampleFrames), dtype='float')]
+
         for i in range(sampleFrames):
+            frame = float(i * bpy.context.scene.render.fps / sampleFramerate)
             trans, rot, scale = Matrix(correctedMatrix[i]).decompose()
             rot = rot.to_euler()
-            finalCurves['s0'].keyframe_points[i].co[1] = scale[0]
-            finalCurves['s0'].keyframe_points[i].interpolation = 'CONSTANT'
-            finalCurves['s1'].keyframe_points[i].co[1] = scale[1]
-            finalCurves['s1'].keyframe_points[i].interpolation = 'CONSTANT'
-            finalCurves['s2'].keyframe_points[i].co[1] = scale[2]
-            finalCurves['s2'].keyframe_points[i].interpolation = 'CONSTANT'
-            finalCurves['r0'].keyframe_points[i].co[1] = rot[0]
-            finalCurves['r0'].keyframe_points[i].interpolation = 'CONSTANT'
-            finalCurves['r1'].keyframe_points[i].co[1] = rot[1]
-            finalCurves['r1'].keyframe_points[i].interpolation = 'CONSTANT'
-            finalCurves['r2'].keyframe_points[i].co[1] = rot[2]
-            finalCurves['r2'].keyframe_points[i].interpolation = 'CONSTANT'
-            finalCurves['t0'].keyframe_points[i].co[1] = trans[0]
-            finalCurves['t0'].keyframe_points[i].interpolation = 'CONSTANT'
-            finalCurves['t1'].keyframe_points[i].co[1] = trans[1]
-            finalCurves['t1'].keyframe_points[i].interpolation = 'CONSTANT'
-            finalCurves['t2'].keyframe_points[i].co[1] = trans[2]
-            finalCurves['t2'].keyframe_points[i].interpolation = 'CONSTANT'
+
+            scales[0][2 * i + 1] = scale[0]
+            scales[1][2 * i + 1] = scale[1]
+            scales[2][2 * i + 1] = scale[2]
+
+            rots[0][2 * i + 1] = rot[0]
+            rots[1][2 * i + 1] = rot[1]
+            rots[2][2 * i + 1] = rot[2]
+
+            transs[0][2 * i + 1] = trans[0]
+            transs[1][2 * i + 1] = trans[1]
+            transs[2][2 * i + 1] = trans[2]
+
+            scales[0][2 * i] = frame
+            scales[1][2 * i] = frame
+            scales[2][2 * i] = frame
+
+            rots[0][2 * i] = frame
+            rots[1][2 * i] = frame
+            rots[2][2 * i] = frame
+
+            transs[0][2 * i] = frame
+            transs[1][2 * i] = frame
+            transs[2][2 * i] = frame
+
+        finalCurves['s0'].keyframe_points.foreach_set("co", scales[0])
+        finalCurves['s1'].keyframe_points.foreach_set("co", scales[1])
+        finalCurves['s2'].keyframe_points.foreach_set("co", scales[2])
+        finalCurves['r0'].keyframe_points.foreach_set("co", rots[0])
+        finalCurves['r1'].keyframe_points.foreach_set("co", rots[1])
+        finalCurves['r2'].keyframe_points.foreach_set("co", rots[2])
+        finalCurves['t0'].keyframe_points.foreach_set("co", transs[0])
+        finalCurves['t1'].keyframe_points.foreach_set("co", transs[1])
+        finalCurves['t2'].keyframe_points.foreach_set("co", transs[2])
 
         times[6] = time.time()
         ttimes.append(times)
@@ -969,7 +1010,8 @@ def makeAction(actionData, arma, skele):
             total += durations[i]
         
     times = [f"{t / total * 100:3.2f}%" for t in times]
-    print(' '.join(times))
+    #print(' '.join(times))
+    print(f'\rImporting Action {actionNameWithQuotes: <16} DONE!')
 
 
 def makeObject(context, meshData, partData, material, bones, meshBone):
