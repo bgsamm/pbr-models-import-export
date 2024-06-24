@@ -190,7 +190,7 @@ subpanels = (
 
 class ImportModel(Operator, ImportHelper):
     '''Import a model from Pokémon Battle Revolution'''
-    bl_idname = 'pbr.import'
+    bl_idname = 'pbr.pbrimport'
     bl_label = 'PBR Model (.sdr/.odr/.mdr)'
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -227,7 +227,7 @@ class ImportModel(Operator, ImportHelper):
 
 class ExportModel(Operator, ExportHelper):
     '''Export a model for use in Pokémon Battle Revolution'''
-    bl_idname = 'pbr.export'
+    bl_idname = 'pbr.pbrexport'
     bl_label = 'PBR Model (.sdr)'
     bl_options = {'REGISTER', 'UNDO'}
 
