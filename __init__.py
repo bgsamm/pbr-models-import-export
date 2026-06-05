@@ -50,6 +50,9 @@ class AddMatAnim(Operator):
         scene = context.scene
         action = bpy.data.actions.new(scene.prop_anim_name)
         action.id_root = 'NODETREE'
+        # fake user so the new material animation survives a save/reload
+        # before it's assigned to a material's node tree
+        action.use_fake_user = True
         scene.prop_anim_name = ''
         return {'FINISHED'}
 

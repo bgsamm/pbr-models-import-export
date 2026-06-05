@@ -129,7 +129,16 @@ def parseActions(file, address, numActions):
         actionAddr = address + i * 0x30
         nameAddr = file.read('uint', actionAddr)
         name = file.read('string', nameAddr)
+        # The action header stores time markers; the float at 0xc is the
+        # action's declared end time (seconds). Some control bones (IK
+        # targets, pole vectors, root controls) carry a single shared
+        # keyframe stream covering every action concatenated, so their
+        # curves extend far past this action - producing long, flat "tails"
+        # in the imported timeline. We record the declared end here and hard-
+        # cap sampling to it in makeAction. Falls back to 0 (no cap) if unset.
+        declaredEnd = file.read('float', actionAddr, offset=0xc)
         anim_dict[i] = {'name': name,
+                        'declaredEnd': declaredEnd,
                         'bones': {}}
 
 # these are the types used in the game code as far as I can tell
@@ -754,6 +763,23 @@ def makeAction(actionData, arma, skele):
 
     sampleFramerate = max(60, bpy.context.scene.render.fps) # hardcoded for now
     action = bpy.data.actions.new(actionData['name'])
+    # give every imported action a fake user so it survives a save/reload even
+    # if it isn't currently assigned to one of the armature's animation slots
+    action.use_fake_user = True
+    # Blender 4.4+ slotted-action API: create a typed OBJECT slot and bind it to
+    # the armature explicitly. The old "assign an untyped action and let Blender
+    # auto-bind the slot" path is fragile - a typed slot is never auto-selected
+    # on a plain animation_data.action assignment, which leaves action_slot empty
+    # so nothing plays. Binding the slot here drives the armature immediately, and
+    # Blender records the binding per-ID, so the slot is recalled whenever the
+    # user re-selects this action later. With the slot marked active, the legacy
+    # action.fcurves accessor used below writes straight into its channelbag, so
+    # the baking code stays unchanged.
+    armature_slot = action.slots.new('OBJECT', 'Armature')
+    action.slots.active = armature_slot
+    arma.animation_data_create()
+    arma.animation_data.action = action
+    arma.animation_data.action_slot = armature_slot
     ttimes = []
     sys.stdout.flush()
     for boneName in actionData['bones']:
@@ -827,6 +853,14 @@ def makeAction(actionData, arma, skele):
 
 
                 i += 1
+
+        # Hard-cap the sampled length to the action's declared end time.
+        # Keyframes beyond it belong to other actions' slices of a shared
+        # control-bone timeline and are never played in-game; sampling past
+        # the cap is what creates the long tails (sometimes ~frame 1000+).
+        declaredEnd = actionData.get('declaredEnd', 0)
+        if declaredEnd > 0:
+            endTime = min(endTime, declaredEnd)
 
         sampleFrames = math.ceil(sampleFramerate * endTime)
 
@@ -1016,6 +1050,8 @@ def makeAction(actionData, arma, skele):
     #print(' '.join(times))
     print(f'\rImporting Action {actionNameWithQuotes: <16} DONE!')
 
+    return action
+
 
 def makeObject(context, meshData, partData, material, bones, meshBone):
     m = makeMesh(meshData, partData, bones)
@@ -1136,8 +1172,15 @@ def importSDR(context, path, useDefaultPose=False, joinMeshes=False):
         arma.animation_data_create()
         for bone in arma.pose.bones:
             bone.rotation_mode = 'XYZ'
+        builtActions = []
         for action in anim_dict:
-            makeAction(anim_dict[action], arma, skele)
+            builtActions.append(makeAction(anim_dict[action], arma, skele))
+        # makeAction leaves the last-built action bound to the armature; instead
+        # leave the first (typically the idle/wait animation) assigned so the
+        # model shows a sensible animation right after import. Plain assignment
+        # is enough - Blender recalls the per-ID slot binding makeAction set up.
+        if builtActions:
+            arma.animation_data.action = builtActions[0]
         arma.select_set(False)
         # create meshes
         for bone in skele.bones:
