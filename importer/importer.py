@@ -741,8 +741,11 @@ def makeMesh(meshData, partData, bones):
     f = [face.vertexIndices for face in partData.faces]
     m.from_pydata(v, [], f)
     # set mesh vertex normals
-    m.use_auto_smooth = True
-    m.normals_split_custom_set_from_vertices(meshData.vertNormals) 
+    # (use_auto_smooth was removed in Blender 4.1; custom split normals are
+    #  honored directly, but faces still need smooth shading to display them)
+    m.polygons.foreach_set('use_smooth', [True] * len(m.polygons))
+    m.normals_split_custom_set_from_vertices(meshData.vertNormals)
+    m.update()
     return m
 
 def makeAction(actionData, arma, skele):
@@ -1067,7 +1070,8 @@ def makeArmature(context, skele):
             isBone = bone.type == 2
             dontInheritScale = isBone and (bone.nodeFlags >> 3) & 1 and (bone.boneFlags & 8)
             if dontInheritScale:
-                b.bone.inherit_scale = 'NONE_LEGACY'
+                # 'NONE_LEGACY' was removed in Blender 4.0; 'NONE' is the modern equivalent
+                b.bone.inherit_scale = 'NONE'
 
         if b.name != bone.name:
             print("DUPLICATE BONE NAME: ", b.name, " ", bone.name)

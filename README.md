@@ -11,7 +11,7 @@ Navigate to `File > Import > PBR model (.sdr/.odr/.mdr)` and select your `.sdr`,
 Assign animations using the PBR tab in the properties panel.
 Then, select the armature and go to `File > Export > PBR model (.sdr)`. Make sure only the armature is selected.
 #
-This addon is targeted at Blender versions `2.93` and above; older versions may not work as intended. To find the models in the ROM you'll need to unpack them from the game's `.fsys` archives.
+This addon is targeted at Blender `4.5.7 LTS`; older versions (including the previously supported `2.93`) are no longer compatible. To find the models in the ROM you'll need to unpack them from the game's `.fsys` archives.
 <br/><br/>
 If you run into issues or you're interested in reverse engineering the Pokémon games on the Gamecube/Wii consoles you can find us on discord:
 www.discord.gg/xCPjjnv .

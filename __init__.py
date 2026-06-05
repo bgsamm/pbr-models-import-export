@@ -1,7 +1,9 @@
 bl_info = {
     'name': 'PBR Model Importer',
     'author': 'pjsamm',
-    'blender': (2, 93, 0),
+    'blender': (4, 5, 7),
+    'location': 'File > Import/Export > PBR Model',
+    'description': 'Import/export Pokémon Battle Revolution models (Blender 4.5.7 LTS)',
     'category': 'Import-Export',
 }
 
@@ -219,10 +221,12 @@ class ImportModel(Operator, ImportHelper):
         importer.importSDR(context, self.filepath,
                            useDefaultPose=self.use_default_pose,
                            joinMeshes=self.join_meshes)
-        # set viewport shading to Material Preview in Layout view
-        view = [space for area in bpy.data.screens['Layout'].areas
-                for space in area.spaces if space.type == 'VIEW_3D'][0]
-        view.shading.type = 'MATERIAL'
+        # set viewport shading to Material Preview in any open 3D view
+        for screen in bpy.data.screens:
+            for area in screen.areas:
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        space.shading.type = 'MATERIAL'
         return {'FINISHED'}
 
 class ExportModel(Operator, ExportHelper):
@@ -298,8 +302,8 @@ def unregister():
     unregister_class(PBRPropertiesPanel)
     for cls in subpanels:
         unregister_class(cls)
-        RemoveProperty(Armature, attr=f'prop_{cls.anim_id}')
-        RemoveProperty(Material, attr=f'prop_{cls.anim_id}')
+        delattr(Armature, f'prop_{cls.anim_id}')
+        delattr(Material, f'prop_{cls.anim_id}')
 
 if __name__ == '__main__':
     register()
